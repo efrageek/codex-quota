@@ -16,13 +16,13 @@ import { PRIMARY_CMD, MULTI_ACCOUNT_PATHS, CODEX_CLI_AUTH_PATH, CLAUDE_MULTI_ACC
 import { GREEN, RED, YELLOW, setNoColorFlag, supportsColor, colorize, getPackageVersion } from "./lib/color.js";
 import { decodeJWT, extractAccountId, extractProfile } from "./lib/jwt.js";
 import {
-	printHelp, printHelpCodex, printHelpClaude,
+	printHelp, printHelpCodex, printHelpClaude, printHelpFactory, printHelpFactoryQuota,
 	printHelpAdd, printHelpCodexReauth, printHelpSwitch, printHelpCodexSync,
 	printHelpList, printHelpRemove, printHelpQuota,
 	printHelpClaudeAdd, printHelpClaudeReauth, printHelpClaudeSwitch, printHelpClaudeSync,
 	printHelpClaudeList, printHelpClaudeRemove, printHelpClaudeQuota,
 } from "./lib/display.js";
-import { handleCodex, handleClaude, handleQuota } from "./lib/handlers.js";
+import { handleCodex, handleClaude, handleFactory, handleFactoryQuota, handleQuota } from "./lib/handlers.js";
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
@@ -40,6 +40,19 @@ async function main() {
 		local: args.includes("--local"),
 	};
 
+	// Parse --billing-day flag for Factory quota
+	const billingDayIdx = args.indexOf("--billing-day");
+	if (billingDayIdx !== -1 && billingDayIdx + 1 < args.length) {
+		const raw = args[billingDayIdx + 1];
+		const parsed = parseInt(raw, 10);
+		if (Number.isFinite(parsed)) {
+			flags.billingDay = parsed;
+		} else {
+			console.error(colorize(`Error: Invalid --billing-day value: ${raw}`, RED));
+			process.exit(1);
+		}
+	}
+
 	// Set global noColorFlag for supportsColor() function
 	setNoColorFlag(flags.noColor);
 
@@ -51,9 +64,15 @@ async function main() {
 	}
 
 	// Extract non-flag arguments
-	const nonFlagArgs = args.filter(a => !a.startsWith("--") && a !== "-h");
+	// Filter out flags and their values (e.g., --billing-day N)
+	const flagsWithValues = new Set();
+	const billingDayArgIdx = args.indexOf("--billing-day");
+	if (billingDayArgIdx !== -1 && billingDayArgIdx + 1 < args.length) {
+		flagsWithValues.add(billingDayArgIdx + 1);
+	}
+	const nonFlagArgs = args.filter((a, i) => !a.startsWith("--") && a !== "-h" && !flagsWithValues.has(i));
 	const firstArg = nonFlagArgs[0];
-	const namespace = firstArg === "codex" || firstArg === "claude" ? firstArg : null;
+	const namespace = firstArg === "codex" || firstArg === "claude" || firstArg === "factory" ? firstArg : null;
 	const namespaceArgs = namespace ? nonFlagArgs.slice(1) : nonFlagArgs;
 	const subcommand = namespace ? namespaceArgs[0] : null;
 
@@ -89,15 +108,23 @@ async function main() {
 			}
 			return;
 		}
+		if (namespace === "claude") {
+			switch (subcommand) {
+				case "add": printHelpClaudeAdd(); break;
+				case "reauth": printHelpClaudeReauth(); break;
+				case "switch": printHelpClaudeSwitch(); break;
+				case "sync": printHelpClaudeSync(); break;
+				case "list": printHelpClaudeList(); break;
+				case "remove": printHelpClaudeRemove(); break;
+				case "quota": printHelpClaudeQuota(); break;
+				default: printHelpClaude(); break;
+			}
+			return;
+		}
+		// namespace === "factory"
 		switch (subcommand) {
-			case "add": printHelpClaudeAdd(); break;
-			case "reauth": printHelpClaudeReauth(); break;
-			case "switch": printHelpClaudeSwitch(); break;
-			case "sync": printHelpClaudeSync(); break;
-			case "list": printHelpClaudeList(); break;
-			case "remove": printHelpClaudeRemove(); break;
-			case "quota": printHelpClaudeQuota(); break;
-			default: printHelpClaude(); break;
+			case "quota": printHelpFactoryQuota(); break;
+			default: printHelpFactory(); break;
 		}
 		return;
 	}
@@ -109,6 +136,10 @@ async function main() {
 	}
 	if (namespace === "claude") {
 		await handleClaude(namespaceArgs, flags);
+		return;
+	}
+	if (namespace === "factory") {
+		await handleFactory(namespaceArgs, flags);
 		return;
 	}
 
@@ -243,6 +274,8 @@ export {
 	printHelpQuota,
 	formatTokenCount,
 	buildFactoryUsageLines,
+	printHelpFactory,
+	printHelpFactoryQuota,
 } from "./lib/display.js";
 
 // Subcommand handlers (for testing)
@@ -254,6 +287,9 @@ export {
 	handleClaudeReauth,
 	handleClaudeSwitch,
 	handleClaudeRemove,
+	handleFactory,
+	handleFactoryQuota,
+	handleQuota,
 } from "./lib/handlers.js";
 
 // Color utilities

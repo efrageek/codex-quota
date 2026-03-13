@@ -119,6 +119,8 @@ import {
 	formatTokenCount,
 	buildFactoryUsageLines,
 	printHelp,
+	printHelpFactory,
+	printHelpFactoryQuota,
 	printHelpAdd,
 	printHelpCodexSync,
 	printHelpClaudeSync,
@@ -126,6 +128,10 @@ import {
 	printHelpList,
 	printHelpRemove,
 	printHelpQuota,
+	// Factory handlers
+	handleFactory,
+	handleFactoryQuota,
+	handleQuota,
 } from "./codex-quota.js";
 
 // Ensure pi auth writes never touch the real home directory during tests
@@ -6315,5 +6321,555 @@ describe("buildFactoryUsageLines", () => {
 		const barLine = lines.find(l => l.includes("[") && l.includes("]"));
 		expect(barLine).toBeDefined();
 		expect(barLine).toContain("100% left");
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Factory Handlers
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("handleFactory", () => {
+	let consoleOutput;
+	let consoleErrors;
+	let originalConsoleLog;
+	let originalConsoleError;
+	let originalExit;
+	let exitCode;
+
+	beforeEach(() => {
+		originalConsoleLog = console.log;
+		originalConsoleError = console.error;
+		originalExit = process.exit;
+		consoleOutput = [];
+		consoleErrors = [];
+		exitCode = null;
+		console.log = (...args) => { consoleOutput.push(args.join(" ")); };
+		console.error = (...args) => { consoleErrors.push(args.join(" ")); };
+		process.exit = (code) => { exitCode = code; throw new Error(`EXIT_${code}`); };
+	});
+
+	afterEach(() => {
+		console.log = originalConsoleLog;
+		console.error = originalConsoleError;
+		process.exit = originalExit;
+	});
+
+	test("no subcommand shows Factory help", async () => {
+		await handleFactory([], {});
+		const output = consoleOutput.join("\n");
+		expect(output).toContain("factory");
+		expect(output).toContain("quota");
+	});
+
+	test("'help' subcommand shows Factory help", async () => {
+		await handleFactory(["help"], {});
+		const output = consoleOutput.join("\n");
+		expect(output).toContain("factory");
+		expect(output).toContain("quota");
+	});
+
+	test("unknown subcommand shows error and help then exits", async () => {
+		try {
+			await handleFactory(["unknowncmd"], {});
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+		const errorOutput = consoleErrors.join("\n");
+		expect(errorOutput).toContain("unknowncmd");
+		expect(exitCode).toBe(1);
+		// Also shows help
+		const output = consoleOutput.join("\n");
+		expect(output).toContain("factory");
+	});
+
+	test("'quota' subcommand routes to handleFactoryQuota", async () => {
+		// This will fail because no Factory accounts, but it proves routing works
+		try {
+			await handleFactory(["quota"], { json: true });
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+		const output = consoleOutput.join("\n");
+		// Should show JSON error about no Factory accounts
+		expect(output).toContain("No Factory accounts found");
+	});
+});
+
+describe("handleFactoryQuota", () => {
+	let consoleOutput;
+	let consoleErrors;
+	let originalConsoleLog;
+	let originalConsoleError;
+	let originalExit;
+	let exitCode;
+	let originalEnv;
+	let originalFetch;
+
+	beforeEach(() => {
+		originalConsoleLog = console.log;
+		originalConsoleError = console.error;
+		originalExit = process.exit;
+		originalEnv = process.env.FACTORY_ACCOUNTS;
+		originalFetch = globalThis.fetch;
+		consoleOutput = [];
+		consoleErrors = [];
+		exitCode = null;
+		console.log = (...args) => { consoleOutput.push(args.join(" ")); };
+		console.error = (...args) => { consoleErrors.push(args.join(" ")); };
+		process.exit = (code) => { exitCode = code; throw new Error(`EXIT_${code}`); };
+	});
+
+	afterEach(() => {
+		console.log = originalConsoleLog;
+		console.error = originalConsoleError;
+		process.exit = originalExit;
+		globalThis.fetch = originalFetch;
+		if (originalEnv === undefined) delete process.env.FACTORY_ACCOUNTS;
+		else process.env.FACTORY_ACCOUNTS = originalEnv;
+	});
+
+	test("no accounts shows error with searched locations (JSON)", async () => {
+		delete process.env.FACTORY_ACCOUNTS;
+		try {
+			await handleFactoryQuota([], { json: true });
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+		const output = consoleOutput.join("\n");
+		const parsed = JSON.parse(output);
+		expect(parsed.success).toBe(false);
+		expect(parsed.error).toContain("No Factory accounts found");
+		expect(parsed.searchedLocations).toBeArray();
+		expect(parsed.searchedLocations.length).toBeGreaterThan(0);
+	});
+
+	test("no accounts shows error with guidance (human-readable)", async () => {
+		delete process.env.FACTORY_ACCOUNTS;
+		try {
+			await handleFactoryQuota([], {});
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+		const errorOutput = consoleErrors.join("\n");
+		expect(errorOutput).toContain("No Factory accounts found");
+		expect(errorOutput).toContain("factory add");
+		expect(exitCode).toBe(1);
+	});
+
+	test("displays usage box for valid account with mocked API", async () => {
+		process.env.FACTORY_ACCOUNTS = JSON.stringify([{
+			label: "test-factory",
+			accountId: "user_123",
+			email: "dev@factory.ai",
+			org: "my-org",
+			accessToken: "fake-jwt-token",
+			planLimit: 20000000,
+		}]);
+
+		globalThis.fetch = async (url) => ({
+			ok: true,
+			json: async () => ({
+				data: [
+					{
+						date: "2026-03-01",
+						billable_tokens: 5000000,
+						by_model: [{ model_id: "claude-3.5-sonnet", billable_tokens: 5000000 }],
+					},
+				],
+			}),
+		});
+
+		await handleFactoryQuota([], {});
+		const output = consoleOutput.join("\n");
+		expect(output).toContain("Factory");
+		expect(output).toContain("test-factory");
+		expect(output).toContain("dev@factory.ai");
+		// Should contain usage bar characters
+		expect(output).toContain("[");
+		expect(output).toContain("]");
+	});
+
+	test("JSON output includes structured usage data", async () => {
+		process.env.FACTORY_ACCOUNTS = JSON.stringify([{
+			label: "test-factory",
+			accountId: "user_123",
+			email: "dev@factory.ai",
+			org: "my-org",
+			accessToken: "fake-jwt-token",
+			planLimit: 20000000,
+		}]);
+
+		globalThis.fetch = async () => ({
+			ok: true,
+			json: async () => ({
+				data: [
+					{
+						date: "2026-03-01",
+						billable_tokens: 5000000,
+						by_model: [{ model_id: "claude-3.5-sonnet", billable_tokens: 5000000 }],
+					},
+				],
+			}),
+		});
+
+		await handleFactoryQuota([], { json: true });
+		const output = consoleOutput.join("\n");
+		const parsed = JSON.parse(output);
+		expect(Array.isArray(parsed)).toBe(true);
+		expect(parsed.length).toBe(1);
+		expect(parsed[0].label).toBe("test-factory");
+		expect(parsed[0].email).toBe("dev@factory.ai");
+		expect(parsed[0].usage).toBeDefined();
+		expect(parsed[0].usage.used).toBe(5000000);
+		expect(parsed[0].usage.limit).toBe(20000000);
+	});
+
+	test("label filter works for Factory accounts", async () => {
+		process.env.FACTORY_ACCOUNTS = JSON.stringify([
+			{ label: "work", accountId: "u1", accessToken: "tok1", planLimit: 20000000 },
+			{ label: "personal", accountId: "u2", accessToken: "tok2", planLimit: 20000000 },
+		]);
+
+		globalThis.fetch = async () => ({
+			ok: true,
+			json: async () => ({ data: [] }),
+		});
+
+		await handleFactoryQuota(["work"], { json: true });
+		const output = consoleOutput.join("\n");
+		const parsed = JSON.parse(output);
+		expect(parsed.length).toBe(1);
+		expect(parsed[0].label).toBe("work");
+	});
+
+	test("label filter shows error for non-existent label", async () => {
+		process.env.FACTORY_ACCOUNTS = JSON.stringify([
+			{ label: "work", accountId: "u1", accessToken: "tok1" },
+		]);
+
+		try {
+			await handleFactoryQuota(["nonexistent"], { json: true });
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+		const output = consoleOutput.join("\n");
+		const parsed = JSON.parse(output);
+		expect(parsed.success).toBe(false);
+		expect(parsed.error).toContain("nonexistent");
+		expect(parsed.availableLabels).toContain("work");
+	});
+
+	test("--billing-day flag is passed to usage fetcher", async () => {
+		let capturedUrl = null;
+		process.env.FACTORY_ACCOUNTS = JSON.stringify([{
+			label: "work",
+			accountId: "u1",
+			accessToken: "tok1",
+			planLimit: 20000000,
+		}]);
+
+		globalThis.fetch = async (url) => {
+			capturedUrl = url;
+			return {
+				ok: true,
+				json: async () => ({ data: [] }),
+			};
+		};
+
+		await handleFactoryQuota([], { billingDay: 15 });
+		// The billing period should be computed with day 15
+		expect(capturedUrl).toBeDefined();
+		expect(capturedUrl).toContain("startDate=");
+		expect(capturedUrl).toContain("endDate=");
+	});
+
+	test("API error is displayed gracefully per account", async () => {
+		process.env.FACTORY_ACCOUNTS = JSON.stringify([{
+			label: "work",
+			accountId: "u1",
+			accessToken: "tok1",
+		}]);
+
+		globalThis.fetch = async () => ({
+			ok: false,
+			status: 403,
+			json: async () => ({ detail: "Not enabled for this organization" }),
+		});
+
+		await handleFactoryQuota([], {});
+		const output = consoleOutput.join("\n");
+		expect(output).toContain("Error");
+		expect(output).toContain("403");
+	});
+});
+
+describe("handleQuota with factory scope", () => {
+	let consoleOutput;
+	let consoleErrors;
+	let originalConsoleLog;
+	let originalConsoleError;
+	let originalExit;
+	let exitCode;
+	let originalEnv;
+	let originalFetch;
+
+	beforeEach(() => {
+		originalConsoleLog = console.log;
+		originalConsoleError = console.error;
+		originalExit = process.exit;
+		originalEnv = process.env.FACTORY_ACCOUNTS;
+		originalFetch = globalThis.fetch;
+		consoleOutput = [];
+		consoleErrors = [];
+		exitCode = null;
+		console.log = (...args) => { consoleOutput.push(args.join(" ")); };
+		console.error = (...args) => { consoleErrors.push(args.join(" ")); };
+		process.exit = (code) => { exitCode = code; throw new Error(`EXIT_${code}`); };
+	});
+
+	afterEach(() => {
+		console.log = originalConsoleLog;
+		console.error = originalConsoleError;
+		process.exit = originalExit;
+		globalThis.fetch = originalFetch;
+		if (originalEnv === undefined) delete process.env.FACTORY_ACCOUNTS;
+		else process.env.FACTORY_ACCOUNTS = originalEnv;
+	});
+
+	test("scope='factory' with no accounts shows factory-specific error", async () => {
+		delete process.env.FACTORY_ACCOUNTS;
+		try {
+			await handleQuota([], { json: true }, "factory");
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+		const output = consoleOutput.join("\n");
+		// Should show no accounts error (factory gets rendered even with JSON)
+		expect(exitCode).toBe(1);
+	});
+
+	test("scope='all' with no Factory accounts silently omits Factory section", async () => {
+		// Set up a Codex account via env so we have something to show
+		const origCodex = process.env.CODEX_ACCOUNTS;
+		process.env.CODEX_ACCOUNTS = JSON.stringify([{
+			label: "test-codex",
+			accountId: "acc_123",
+			access: "eyJhbGciOiJSUzI1NiJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsidXNlcl9pZCI6InRlc3RVc2VyMTIzIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20ifSwic3ViIjoiYXV0aDB8dGVzdCIsImV4cCI6OTk5OTk5OTk5OX0.fake",
+			refresh: "refresh_tok",
+			expires: Date.now() + 3600000,
+		}]);
+		delete process.env.FACTORY_ACCOUNTS;
+
+		globalThis.fetch = async (url) => {
+			// Return Codex usage
+			if (url.includes("chatgpt.com")) {
+				return {
+					ok: true,
+					json: async () => ({
+						rate_limit: {
+							primary_window: { remaining_percent: 80 },
+							secondary_window: { remaining_percent: 90 },
+						},
+					}),
+				};
+			}
+			// Claude usage fallback
+			return {
+				ok: true,
+				json: async () => ({}),
+			};
+		};
+
+		await handleQuota([], { local: true }, "all");
+		const output = consoleOutput.join("\n");
+		// Should have Codex output
+		expect(output).toContain("Codex");
+		// Should NOT have Factory error messages
+		const errorOutput = consoleErrors.join("\n");
+		expect(errorOutput).not.toContain("No Factory accounts");
+
+		// Restore
+		if (origCodex === undefined) delete process.env.CODEX_ACCOUNTS;
+		else process.env.CODEX_ACCOUNTS = origCodex;
+	});
+
+	test("JSON output with scope='all' includes factory key", async () => {
+		const origCodex = process.env.CODEX_ACCOUNTS;
+		process.env.CODEX_ACCOUNTS = JSON.stringify([{
+			label: "test-codex",
+			accountId: "acc_123",
+			access: "eyJhbGciOiJSUzI1NiJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsidXNlcl9pZCI6InRlc3RVc2VyMTIzIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20ifSwic3ViIjoiYXV0aDB8dGVzdCIsImV4cCI6OTk5OTk5OTk5OX0.fake",
+			refresh: "refresh_tok",
+			expires: Date.now() + 3600000,
+		}]);
+		delete process.env.FACTORY_ACCOUNTS;
+
+		globalThis.fetch = async (url) => {
+			if (url.includes("chatgpt.com")) {
+				return {
+					ok: true,
+					json: async () => ({
+						rate_limit: {
+							primary_window: { remaining_percent: 80 },
+							secondary_window: { remaining_percent: 90 },
+						},
+					}),
+				};
+			}
+			return { ok: true, json: async () => ({}) };
+		};
+
+		await handleQuota([], { json: true, local: true }, "all");
+		const output = consoleOutput.join("\n");
+		const parsed = JSON.parse(output);
+		expect(parsed).toHaveProperty("factory");
+		expect(Array.isArray(parsed.factory)).toBe(true);
+		expect(parsed).toHaveProperty("codex");
+		expect(parsed).toHaveProperty("claude");
+
+		if (origCodex === undefined) delete process.env.CODEX_ACCOUNTS;
+		else process.env.CODEX_ACCOUNTS = origCodex;
+	});
+});
+
+describe("printHelpFactory", () => {
+	let consoleOutput;
+	let originalConsoleLog;
+
+	beforeEach(() => {
+		originalConsoleLog = console.log;
+		consoleOutput = [];
+		console.log = (...args) => { consoleOutput.push(args.join(" ")); };
+	});
+
+	afterEach(() => {
+		console.log = originalConsoleLog;
+	});
+
+	test("contains factory namespace and quota command", () => {
+		printHelpFactory();
+		const output = consoleOutput.join("\n");
+		expect(output).toContain("factory");
+		expect(output).toContain("quota");
+		expect(output).toContain("--billing-day");
+	});
+
+	test("contains codex-quota primary command", () => {
+		printHelpFactory();
+		const output = consoleOutput.join("\n");
+		expect(output).toContain("codex-quota");
+	});
+});
+
+describe("printHelpFactoryQuota", () => {
+	let consoleOutput;
+	let originalConsoleLog;
+
+	beforeEach(() => {
+		originalConsoleLog = console.log;
+		consoleOutput = [];
+		console.log = (...args) => { consoleOutput.push(args.join(" ")); };
+	});
+
+	afterEach(() => {
+		console.log = originalConsoleLog;
+	});
+
+	test("contains factory quota details", () => {
+		printHelpFactoryQuota();
+		const output = consoleOutput.join("\n");
+		expect(output).toContain("factory quota");
+		expect(output).toContain("--billing-day");
+		expect(output).toContain("--json");
+	});
+});
+
+describe("printHelp includes Factory", () => {
+	let consoleOutput;
+	let originalConsoleLog;
+
+	beforeEach(() => {
+		originalConsoleLog = console.log;
+		consoleOutput = [];
+		console.log = (...args) => { consoleOutput.push(args.join(" ")); };
+	});
+
+	afterEach(() => {
+		console.log = originalConsoleLog;
+	});
+
+	test("main help lists factory as a namespace", () => {
+		printHelp();
+		const output = consoleOutput.join("\n");
+		expect(output).toContain("factory");
+		expect(output).toContain("Factory");
+	});
+
+	test("main help includes factory quota example", () => {
+		printHelp();
+		const output = consoleOutput.join("\n");
+		expect(output).toContain("factory quota");
+	});
+});
+
+describe("Factory API key masking (VAL-SEC-001)", () => {
+	let consoleOutput;
+	let originalConsoleLog;
+	let originalEnv;
+	let originalFetch;
+
+	beforeEach(() => {
+		originalConsoleLog = console.log;
+		originalEnv = process.env.FACTORY_ACCOUNTS;
+		originalFetch = globalThis.fetch;
+		consoleOutput = [];
+		console.log = (...args) => { consoleOutput.push(args.join(" ")); };
+	});
+
+	afterEach(() => {
+		console.log = originalConsoleLog;
+		globalThis.fetch = originalFetch;
+		if (originalEnv === undefined) delete process.env.FACTORY_ACCOUNTS;
+		else process.env.FACTORY_ACCOUNTS = originalEnv;
+	});
+
+	test("API keys are not leaked in display output", async () => {
+		const apiKey = "fk-test-secret-api-key-1234567890";
+		process.env.FACTORY_ACCOUNTS = JSON.stringify([{
+			label: "work",
+			accountId: "u1",
+			apiKey: apiKey,
+			planLimit: 20000000,
+		}]);
+
+		globalThis.fetch = async () => ({
+			ok: true,
+			json: async () => ({ data: [] }),
+		});
+
+		await handleFactoryQuota([], {});
+		const output = consoleOutput.join("\n");
+		// The full API key should NOT appear in display output
+		expect(output).not.toContain(apiKey);
+	});
+
+	test("JSON output does not include full API keys", async () => {
+		const apiKey = "fk-test-secret-api-key-1234567890";
+		process.env.FACTORY_ACCOUNTS = JSON.stringify([{
+			label: "work",
+			accountId: "u1",
+			apiKey: apiKey,
+			planLimit: 20000000,
+		}]);
+
+		globalThis.fetch = async () => ({
+			ok: true,
+			json: async () => ({ data: [] }),
+		});
+
+		await handleFactoryQuota([], { json: true });
+		const output = consoleOutput.join("\n");
+		// API key should not be in JSON output
+		expect(output).not.toContain(apiKey);
 	});
 });
