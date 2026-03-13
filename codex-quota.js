@@ -66,9 +66,8 @@ async function main() {
 	// Extract non-flag arguments
 	// Filter out flags and their values (e.g., --billing-day N)
 	const flagsWithValues = new Set();
-	const billingDayArgIdx = args.indexOf("--billing-day");
-	if (billingDayArgIdx !== -1 && billingDayArgIdx + 1 < args.length) {
-		flagsWithValues.add(billingDayArgIdx + 1);
+	if (billingDayIdx !== -1 && billingDayIdx + 1 < args.length) {
+		flagsWithValues.add(billingDayIdx + 1);
 	}
 	const nonFlagArgs = args.filter((a, i) => !a.startsWith("--") && a !== "-h" && !flagsWithValues.has(i));
 	const firstArg = nonFlagArgs[0];
