@@ -130,6 +130,7 @@ import {
 	printHelpQuota,
 	// Factory handlers
 	handleFactory,
+	handleFactoryAdd,
 	handleFactoryQuota,
 	handleQuota,
 } from "./codex-quota.js";
@@ -6871,5 +6872,454 @@ describe("Factory API key masking (VAL-SEC-001)", () => {
 		const output = consoleOutput.join("\n");
 		// API key should not be in JSON output
 		expect(output).not.toContain(apiKey);
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Factory add handler tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("handleFactoryAdd", () => {
+	const testDir = join(tmpdir(), `factory-add-test-${Date.now()}`);
+	const testFactoryDir = join(testDir, "factory-home");
+	const testAuthFile = join(testFactoryDir, "auth.v2.file");
+	const testKeyFile = join(testFactoryDir, "auth.v2.key");
+	const testContainerPath = join(testDir, "factory-accounts.json");
+
+	let originalConsoleLog;
+	let originalConsoleError;
+	let consoleOutput;
+	let consoleErrors;
+	let originalProcessExit;
+	let exitCode;
+	let originalPromptInput;
+	let promptResponses;
+	let promptCallIndex;
+
+	// Create valid auth.v2 test files
+	function writeTestAuthFiles(jwt, refreshToken = "test-refresh-token-abc") {
+		mkdirSync(testFactoryDir, { recursive: true });
+		const data = { access_token: jwt, refresh_token: refreshToken };
+		const key = generateAuthKey();
+		const encrypted = encryptAuthV2(data, key);
+		writeFileSync(testAuthFile, encrypted.encrypted);
+		writeFileSync(testKeyFile, key + "\n");
+	}
+
+	beforeEach(() => {
+		mkdirSync(testDir, { recursive: true });
+
+		originalConsoleLog = console.log;
+		originalConsoleError = console.error;
+		consoleOutput = [];
+		consoleErrors = [];
+		console.log = (...args) => { consoleOutput.push(args.join(" ")); };
+		console.error = (...args) => { consoleErrors.push(args.join(" ")); };
+
+		originalProcessExit = process.exit;
+		exitCode = null;
+		process.exit = (code) => { exitCode = code; throw new Error(`EXIT_${code}`); };
+
+		// Mock promptInput — responses are consumed in order
+		promptCallIndex = 0;
+		promptResponses = [];
+	});
+
+	afterEach(() => {
+		console.log = originalConsoleLog;
+		console.error = originalConsoleError;
+		process.exit = originalProcessExit;
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	test("happy path: adds account from auth.v2 files with label, email, org", async () => {
+		const jwt = createMockFactoryJWT("user_01ABC", "dev@company.com", {
+			org_id: "org_01XYZ",
+			first_name: "Jane",
+			last_name: "Doe",
+		});
+		writeTestAuthFiles(jwt);
+
+		await handleFactoryAdd([], {
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+			_containerPath: testContainerPath,
+			_label: "work",
+		});
+
+		// Verify container was created
+		expect(existsSync(testContainerPath)).toBe(true);
+		const container = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		expect(container.schemaVersion).toBe(1);
+		expect(container.activeLabel).toBe("work");
+		expect(container.accounts.length).toBe(1);
+
+		const account = container.accounts[0];
+		expect(account.label).toBe("work");
+		expect(account.accountId).toBe("user_01ABC");
+		expect(account.email).toBe("dev@company.com");
+		expect(account.org).toBe("org_01XYZ");
+		expect(account.name).toBe("Jane Doe");
+		expect(account.authFile).toBeDefined();
+		expect(account.authKey).toBeDefined();
+		expect(account.source).toBeDefined();
+	});
+
+	test("happy path: JSON output contains success fields", async () => {
+		const jwt = createMockFactoryJWT("user_02", "test@test.com");
+		writeTestAuthFiles(jwt);
+
+		await handleFactoryAdd([], {
+			json: true,
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+			_containerPath: testContainerPath,
+			_label: "myacct",
+		});
+
+		const output = consoleOutput.join("\n");
+		const parsed = JSON.parse(output);
+		expect(parsed.success).toBe(true);
+		expect(parsed.label).toBe("myacct");
+		expect(parsed.email).toBe("test@test.com");
+		expect(parsed.accountId).toBe("user_02");
+	});
+
+	test("missing auth.v2 files → error referencing droid login", async () => {
+		try {
+			await handleFactoryAdd([], {
+				_authFilePath: join(testDir, "nonexistent", "auth.v2.file"),
+				_keyFilePath: join(testDir, "nonexistent", "auth.v2.key"),
+				_containerPath: testContainerPath,
+				_label: "work",
+			});
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+
+		expect(exitCode).toBe(1);
+		const allOutput = [...consoleOutput, ...consoleErrors].join("\n");
+		expect(allOutput.toLowerCase()).toContain("droid");
+	});
+
+	test("missing auth.v2 files → JSON error", async () => {
+		try {
+			await handleFactoryAdd([], {
+				json: true,
+				_authFilePath: join(testDir, "nonexistent", "auth.v2.file"),
+				_keyFilePath: join(testDir, "nonexistent", "auth.v2.key"),
+				_containerPath: testContainerPath,
+				_label: "work",
+			});
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+
+		expect(exitCode).toBe(1);
+		const output = consoleOutput.join("\n");
+		const parsed = JSON.parse(output);
+		expect(parsed.success).toBe(false);
+		expect(parsed.error).toBeDefined();
+	});
+
+	test("duplicate label rejected with error", async () => {
+		const jwt = createMockFactoryJWT("user_03", "a@b.com");
+		writeTestAuthFiles(jwt);
+
+		// Create existing container with a "work" label
+		const existingContainer = {
+			schemaVersion: 1,
+			activeLabel: "work",
+			accounts: [
+				{ label: "work", accountId: "user_existing", email: "existing@test.com" },
+			],
+		};
+		writeFileSync(testContainerPath, JSON.stringify(existingContainer));
+
+		try {
+			await handleFactoryAdd([], {
+				_authFilePath: testAuthFile,
+				_keyFilePath: testKeyFile,
+				_containerPath: testContainerPath,
+				_label: "work",
+			});
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+
+		expect(exitCode).toBe(1);
+		const allOutput = [...consoleOutput, ...consoleErrors].join("\n");
+		expect(allOutput).toContain("work");
+	});
+
+	test("duplicate label rejected with JSON error", async () => {
+		const jwt = createMockFactoryJWT("user_04", "a@b.com");
+		writeTestAuthFiles(jwt);
+
+		const existingContainer = {
+			schemaVersion: 1,
+			activeLabel: "existing",
+			accounts: [{ label: "mywork", accountId: "user_existing" }],
+		};
+		writeFileSync(testContainerPath, JSON.stringify(existingContainer));
+
+		try {
+			await handleFactoryAdd([], {
+				json: true,
+				_authFilePath: testAuthFile,
+				_keyFilePath: testKeyFile,
+				_containerPath: testContainerPath,
+				_label: "mywork",
+			});
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+
+		expect(exitCode).toBe(1);
+		const output = consoleOutput.join("\n");
+		const parsed = JSON.parse(output);
+		expect(parsed.success).toBe(false);
+		expect(parsed.error).toContain("mywork");
+	});
+
+	test("corrupt auth.v2 → decryption error without crash", async () => {
+		mkdirSync(testFactoryDir, { recursive: true });
+		writeFileSync(testAuthFile, "corrupt:data:here");
+		writeFileSync(testKeyFile, generateAuthKey() + "\n");
+
+		try {
+			await handleFactoryAdd([], {
+				_authFilePath: testAuthFile,
+				_keyFilePath: testKeyFile,
+				_containerPath: testContainerPath,
+				_label: "work",
+			});
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+
+		expect(exitCode).toBe(1);
+		const allOutput = [...consoleOutput, ...consoleErrors].join("\n").toLowerCase();
+		expect(allOutput).toContain("decrypt");
+	});
+
+	test("invalid label format rejected (spaces)", async () => {
+		const jwt = createMockFactoryJWT("user_05", "a@b.com");
+		writeTestAuthFiles(jwt);
+
+		try {
+			await handleFactoryAdd([], {
+				_authFilePath: testAuthFile,
+				_keyFilePath: testKeyFile,
+				_containerPath: testContainerPath,
+				_label: "my work",
+			});
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+
+		expect(exitCode).toBe(1);
+	});
+
+	test("invalid label format rejected (special chars)", async () => {
+		const jwt = createMockFactoryJWT("user_06", "a@b.com");
+		writeTestAuthFiles(jwt);
+
+		try {
+			await handleFactoryAdd([], {
+				_authFilePath: testAuthFile,
+				_keyFilePath: testKeyFile,
+				_containerPath: testContainerPath,
+				_label: "work@home!",
+			});
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+
+		expect(exitCode).toBe(1);
+	});
+
+	test("multiple sequential adds create separate accounts", async () => {
+		const jwt1 = createMockFactoryJWT("user_07a", "first@test.com", {
+			org_id: "org_A",
+			first_name: "First",
+			last_name: "User",
+		});
+		const jwt2 = createMockFactoryJWT("user_07b", "second@test.com", {
+			org_id: "org_B",
+			first_name: "Second",
+			last_name: "User",
+		});
+
+		// Add first account
+		writeTestAuthFiles(jwt1);
+		await handleFactoryAdd([], {
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+			_containerPath: testContainerPath,
+			_label: "first",
+		});
+
+		// Add second account (overwrite auth files with new JWT)
+		writeTestAuthFiles(jwt2);
+		await handleFactoryAdd([], {
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+			_containerPath: testContainerPath,
+			_label: "second",
+		});
+
+		const container = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		expect(container.accounts.length).toBe(2);
+		expect(container.accounts[0].label).toBe("first");
+		expect(container.accounts[0].accountId).toBe("user_07a");
+		expect(container.accounts[1].label).toBe("second");
+		expect(container.accounts[1].accountId).toBe("user_07b");
+		// activeLabel should be the most recently added
+		expect(container.activeLabel).toBe("second");
+	});
+
+	test("optional API key stored when provided", async () => {
+		const jwt = createMockFactoryJWT("user_08", "a@b.com");
+		writeTestAuthFiles(jwt);
+
+		await handleFactoryAdd([], {
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+			_containerPath: testContainerPath,
+			_label: "withkey",
+			_apiKey: "fk-test-1234567890",
+		});
+
+		const container = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		expect(container.accounts[0].apiKey).toBe("fk-test-1234567890");
+	});
+
+	test("invalid API key (not starting with fk-) rejected", async () => {
+		const jwt = createMockFactoryJWT("user_09", "a@b.com");
+		writeTestAuthFiles(jwt);
+
+		try {
+			await handleFactoryAdd([], {
+				_authFilePath: testAuthFile,
+				_keyFilePath: testKeyFile,
+				_containerPath: testContainerPath,
+				_label: "badkey",
+				_apiKey: "sk-invalid-key",
+			});
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+
+		expect(exitCode).toBe(1);
+	});
+
+	test("optional plan limit stored as number", async () => {
+		const jwt = createMockFactoryJWT("user_10", "a@b.com");
+		writeTestAuthFiles(jwt);
+
+		await handleFactoryAdd([], {
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+			_containerPath: testContainerPath,
+			_label: "withlimit",
+			_planLimit: 20000000,
+		});
+
+		const container = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		expect(container.accounts[0].planLimit).toBe(20000000);
+		expect(typeof container.accounts[0].planLimit).toBe("number");
+	});
+
+	test("file permissions 0o600", async () => {
+		const jwt = createMockFactoryJWT("user_11", "a@b.com");
+		writeTestAuthFiles(jwt);
+
+		await handleFactoryAdd([], {
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+			_containerPath: testContainerPath,
+			_label: "permcheck",
+		});
+
+		const stats = statSync(testContainerPath);
+		expect(stats.mode & 0o777).toBe(0o600);
+	});
+
+	test("original auth.v2 files remain unchanged after add", async () => {
+		const jwt = createMockFactoryJWT("user_12", "a@b.com");
+		writeTestAuthFiles(jwt);
+
+		// Read original content
+		const originalAuthContent = readFileSync(testAuthFile, "utf-8");
+		const originalKeyContent = readFileSync(testKeyFile, "utf-8");
+
+		await handleFactoryAdd([], {
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+			_containerPath: testContainerPath,
+			_label: "nomodify",
+		});
+
+		// Verify auth files unchanged
+		expect(readFileSync(testAuthFile, "utf-8")).toBe(originalAuthContent);
+		expect(readFileSync(testKeyFile, "utf-8")).toBe(originalKeyContent);
+	});
+
+	test("container created on first add with schemaVersion 1", async () => {
+		const jwt = createMockFactoryJWT("user_13", "a@b.com");
+		writeTestAuthFiles(jwt);
+
+		// Ensure no container exists
+		expect(existsSync(testContainerPath)).toBe(false);
+
+		await handleFactoryAdd([], {
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+			_containerPath: testContainerPath,
+			_label: "firstacct",
+		});
+
+		const container = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		expect(container.schemaVersion).toBe(1);
+	});
+
+	test("authFile and authKey fields stored in account entry", async () => {
+		const jwt = createMockFactoryJWT("user_14", "a@b.com");
+		writeTestAuthFiles(jwt);
+
+		await handleFactoryAdd([], {
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+			_containerPath: testContainerPath,
+			_label: "authcheck",
+		});
+
+		const container = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		const account = container.accounts[0];
+		// authFile should be the encrypted content
+		expect(typeof account.authFile).toBe("string");
+		expect(account.authFile.split(":").length).toBe(3); // IV:AuthTag:CipherText
+		// authKey should be the key content
+		expect(typeof account.authKey).toBe("string");
+		// Key should be base64 that decodes to 32 bytes
+		const keyBuf = Buffer.from(account.authKey.trim(), "base64");
+		expect(keyBuf.length).toBe(32);
+	});
+
+	test("handleFactory routes 'add' to handleFactoryAdd", async () => {
+		const jwt = createMockFactoryJWT("user_15", "route@test.com");
+		writeTestAuthFiles(jwt);
+
+		await handleFactory(["add"], {
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+			_containerPath: testContainerPath,
+			_label: "routed",
+		});
+
+		expect(existsSync(testContainerPath)).toBe(true);
+		const container = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		expect(container.accounts[0].label).toBe("routed");
 	});
 });

@@ -288,6 +288,7 @@ export {
 	handleClaudeSwitch,
 	handleClaudeRemove,
 	handleFactory,
+	handleFactoryAdd,
 	handleFactoryQuota,
 	handleQuota,
 } from "./lib/handlers.js";
