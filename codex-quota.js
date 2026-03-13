@@ -290,6 +290,8 @@ export {
 	handleFactory,
 	handleFactoryAdd,
 	handleFactorySwitch,
+	handleFactoryRemove,
+	handleFactoryList,
 	handleFactoryQuota,
 	handleQuota,
 } from "./lib/handlers.js";
