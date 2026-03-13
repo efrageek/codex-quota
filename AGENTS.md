@@ -4,7 +4,7 @@ Guidelines for AI coding agents working in this repository.
 
 ## Project Overview
 
-`codex-quota` is a zero-dependency Node.js CLI for managing multiple OpenAI Codex and Claude OAuth accounts. Provides account management (add, switch, remove, list, sync) and quota checking using only Node.js built-in modules.
+`codex-quota` is a zero-dependency Node.js CLI for managing multiple OpenAI Codex, Claude, and Factory.ai OAuth accounts. Provides account management (add, switch, remove, list, sync) and quota checking using only Node.js built-in modules.
 
 ## Tech Stack
 
@@ -49,7 +49,7 @@ bun run release:pack
 ```
 codex-quota/
 ├── codex-quota.js            # Entry point: main(), CLI routing, barrel re-exports
-├── codex-quota.test.js       # Test suite (203 tests, imports via barrel re-exports)
+├── codex-quota.test.js       # Test suite (535 tests, imports via barrel re-exports)
 ├── lib/
 │   ├── constants.js          # All config constants and path definitions
 │   ├── color.js              # Terminal color output helpers
@@ -62,6 +62,10 @@ codex-quota/
 │   ├── claude-accounts.js    # Claude account loading, session/OAuth resolution
 │   ├── codex-tokens.js       # OpenAI token refresh and multi-store persistence
 │   ├── claude-tokens.js      # Claude token refresh and multi-store persistence
+│   ├── factory-crypto.js     # AES-256-GCM encryption/decryption for Factory auth.v2 files
+│   ├── factory-accounts.js   # Factory account loading, dedup, active-label
+│   ├── factory-tokens.js     # Factory token refresh and multi-store persistence
+│   ├── factory-usage.js      # Factory Analytics API fetch and billing period calculation
 │   ├── codex-usage.js        # Codex usage API fetch
 │   ├── claude-usage.js       # Claude usage API fetch (session + OAuth)
 │   ├── display.js            # Bars, boxes, usage lines, help text, shortenPath
@@ -96,6 +100,10 @@ codex-quota.js (entry)
   ├── lib/codex-tokens.js       ← constants, paths, jwt, token-match, container, fs
   ├── lib/claude-tokens.js      ← constants, paths, token-match, container, fs
   ├── lib/codex-usage.js        ← constants
+  ├── lib/factory-crypto.js     ← constants, fs
+  ├── lib/factory-accounts.js   ← constants, jwt, container, factory-crypto
+  ├── lib/factory-tokens.js     ← constants, jwt, token-match, container, factory-crypto
+  ├── lib/factory-usage.js      ← constants
   ├── lib/claude-usage.js       ← constants, paths, claude-accounts, claude-tokens
   ├── lib/display.js            ← constants, color, jwt, claude-usage (for normalizeClaudeOrgId)
   ├── lib/oauth.js              ← constants, jwt
@@ -121,10 +129,12 @@ codex-quota.js (entry)
 | New constant | `lib/constants.js` |
 | New Codex account loader | `lib/codex-accounts.js` |
 | New Claude account loader | `lib/claude-accounts.js` |
+| New Factory account loader | `lib/factory-accounts.js` |
+| Factory auth.v2 crypto | `lib/factory-crypto.js` |
 | New display/formatting | `lib/display.js` |
-| New CLI subcommand handler | `lib/handlers.js` (+ register in `handleCodex`/`handleClaude`) |
+| New CLI subcommand handler | `lib/handlers.js` (+ register in `handleCodex`/`handleClaude`/`handleFactory`) |
 | New OAuth flow logic | `lib/oauth.js` or `lib/claude-oauth.js` |
-| Token persistence changes | `lib/codex-tokens.js` or `lib/claude-tokens.js` |
+| Token persistence changes | `lib/codex-tokens.js`, `lib/claude-tokens.js`, or `lib/factory-tokens.js` |
 | Sync/divergence logic | `lib/sync.js` |
 | **New export for tests** | Add to the relevant `lib/*.js` module AND add a barrel re-export in `codex-quota.js` |
 
@@ -133,7 +143,7 @@ codex-quota.js (entry)
 `lib/token-match.js` provides unified helpers that replace the old duplicated OpenAI/Claude token-match patterns:
 
 - `isOauthTokenMatch(params)` — single function replaces both `isOpenAiOauthTokenMatch` and `isClaudeOauthTokenMatch`
-- `normalizeEntryTokens(entry, fieldMap)` — generic field normalizer using `OPENAI_TOKEN_FIELDS` or `CLAUDE_TOKEN_FIELDS`
+- `normalizeEntryTokens(entry, fieldMap)` — generic field normalizer using `OPENAI_TOKEN_FIELDS`, `CLAUDE_TOKEN_FIELDS`, or `FACTORY_TOKEN_FIELDS`
 - `updateEntryTokens(entry, account, fieldMap)` — generic field updater
 - `resolveKey(entry, candidates)` — picks the first existing key from candidates
 
@@ -287,4 +297,4 @@ afterEach(() => {
 
 ### Test Counts
 
-As of v1.1.25: **206 tests, 563 expect() calls**. All tests must pass before any commit.
+As of latest: **535 tests, 1326 expect() calls**. All tests must pass before any commit.

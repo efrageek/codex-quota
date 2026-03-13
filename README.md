@@ -1,6 +1,6 @@
 # codex-quota
 
-Multi-account manager for OpenAI Codex CLI and OpenCode. Add, switch, list, and remove accounts with OAuth browser authentication. Seamlessly switch between both tools with shared credentials.
+Multi-account manager for OpenAI Codex CLI, Claude Code, and Factory.ai. Add, switch, list, and remove accounts with OAuth browser authentication. Seamlessly switch between tools with shared credentials.
 
 Zero dependencies - uses Node.js built-ins only.
 
@@ -27,6 +27,9 @@ codex-quota codex add personal
 # Add a Claude credential (interactive)
 codex-quota claude add work
 
+# Add a Factory account (imports from Droid CLI auth.v2 files)
+codex-quota factory add work
+
 # Check quota for all accounts
 codex-quota
 
@@ -35,6 +38,9 @@ codex-quota codex switch personal
 
 # Switch Claude credentials
 codex-quota claude switch work
+
+# Switch Factory account
+codex-quota factory switch work
 
 # Sync activeLabel to CLI auth files
 codex-quota codex sync
@@ -47,15 +53,17 @@ codex-quota claude sync --dry-run
 # List accounts
 codex-quota codex list
 codex-quota claude list
+codex-quota factory list
 
 # Remove an account
 codex-quota codex remove old-account
 codex-quota claude remove old-account
+codex-quota factory remove old-account
 ```
 
 ## Commands
 
-Run `codex-quota` with no namespace to check combined Codex + Claude usage.
+Run `codex-quota` with no namespace to check combined Codex + Claude + Factory usage.
 
 ### codex quota
 
@@ -206,12 +214,66 @@ codex-quota claude sync --json
 Only OAuth-based Claude accounts can be synced. Session-key-only accounts are skipped with
 a warning.
 
+### factory quota
+
+Check usage quota for Factory accounts using the Factory Analytics API.
+
+```bash
+codex-quota factory quota                # All Factory accounts
+codex-quota factory quota work           # Specific account
+codex-quota factory quota --json         # JSON output
+codex-quota factory quota --billing-day 15  # Custom billing period start day
+```
+
+The `--billing-day` flag sets the day of month when the billing period starts (defaults to 1).
+
+### factory add
+
+Import a Factory account from Droid CLI auth.v2 encrypted files.
+
+```bash
+codex-quota factory add                  # Label derived from token
+codex-quota factory add work             # With explicit label
+```
+
+Reads `~/.factory/auth.v2.file` and `~/.factory/auth.v2.key` (AES-256-GCM encrypted)
+and saves the decrypted credentials to `~/.factory-accounts.json`.
+
+### factory switch
+
+Switch the active Factory account.
+
+```bash
+codex-quota factory switch work
+```
+
+Updates `activeLabel` in `~/.factory-accounts.json` and writes back to the
+encrypted auth.v2 files.
+
+### factory list
+
+List all Factory accounts with status indicators.
+
+```bash
+codex-quota factory list
+codex-quota factory list --json
+```
+
+### factory remove
+
+Remove a Factory account from storage.
+
+```bash
+codex-quota factory remove old-account
+```
+
 ## Options
 
 | Option | Description |
 |--------|-------------|
 | `--json` | Output in JSON format |
 | `--dry-run` | Preview sync without writing files |
+| `--billing-day` | Set billing period start day (1–31, default 1, Factory only) |
 | `--no-browser` | Print auth URL instead of opening browser |
 | `--no-color` | Disable colored output |
 | `--version, -v` | Show version number |
@@ -243,6 +305,13 @@ Claude sources (in order):
 | `~/.claude/.credentials.json` | Claude Code credentials | Yes | Yes (`switch`, `sync`) |
 | `~/.local/share/opencode/auth.json` | OpenCode auth file (`anthropic` provider) | No | Yes (`switch`, `sync` if it exists) |
 | `~/.pi/agent/auth.json` | pi auth file (`anthropic` provider) | No | Yes (`switch`, `sync` if it exists) |
+
+Factory sources:
+
+| Source | Purpose | Read | Write |
+|--------|---------|------|-------|
+| `~/.factory-accounts.json` | Factory multi-account file | Yes | Yes (`add`, `remove`) |
+| `~/.factory/auth.v2.file` + `auth.v2.key` | Droid CLI encrypted auth (AES-256-GCM) | Yes | Yes (`switch`) |
 
 ## Multi-Account JSON Schema
 
@@ -441,6 +510,10 @@ Codex overrides:
 - `CODEX_AUTH_PATH` to point to a different Codex CLI auth file
 - `XDG_DATA_HOME` to relocate OpenCode auth paths
 - `PI_AUTH_PATH` to point to a different pi auth file
+
+Factory overrides:
+- `FACTORY_AUTH_FILE_PATH` to point to a different auth.v2.file
+- `FACTORY_AUTH_KEY_PATH` to point to a different auth.v2.key
 
 Notes:
 - On Linux, cookie access requires `sqlite3` and `secret-tool` (libsecret) to decrypt cookies.
