@@ -115,6 +115,9 @@ import {
 	sumDailyTokens,
 	extractModelBreakdown,
 	fetchFactoryUsage,
+	// Factory display utilities
+	formatTokenCount,
+	buildFactoryUsageLines,
 	printHelp,
 	printHelpAdd,
 	printHelpCodexSync,
@@ -5976,5 +5979,341 @@ describe("fetchFactoryUsage", () => {
 		const result = await fetchFactoryUsage(account, { now: new Date(2026, 2, 12) });
 		expect(result.success).toBe(true);
 		expect(result.usage.data).toEqual(mockData);
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// formatTokenCount tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("formatTokenCount", () => {
+	test("formats small numbers without commas", () => {
+		expect(formatTokenCount(0)).toBe("0");
+		expect(formatTokenCount(1)).toBe("1");
+		expect(formatTokenCount(999)).toBe("999");
+	});
+
+	test("formats thousands with commas", () => {
+		expect(formatTokenCount(1000)).toBe("1,000");
+		expect(formatTokenCount(12345)).toBe("12,345");
+		expect(formatTokenCount(999999)).toBe("999,999");
+	});
+
+	test("formats millions with commas", () => {
+		expect(formatTokenCount(1000000)).toBe("1,000,000");
+		expect(formatTokenCount(5000000)).toBe("5,000,000");
+		expect(formatTokenCount(20000000)).toBe("20,000,000");
+	});
+
+	test("formats large numbers (200M)", () => {
+		expect(formatTokenCount(200000000)).toBe("200,000,000");
+	});
+
+	test("returns '0' for null input", () => {
+		expect(formatTokenCount(null)).toBe("0");
+	});
+
+	test("returns '0' for undefined input", () => {
+		expect(formatTokenCount(undefined)).toBe("0");
+	});
+
+	test("returns '0' for NaN input", () => {
+		expect(formatTokenCount(NaN)).toBe("0");
+	});
+
+	test("handles negative numbers", () => {
+		expect(formatTokenCount(-1000)).toBe("-1,000");
+	});
+
+	test("truncates decimal values", () => {
+		expect(formatTokenCount(1234.56)).toBe("1,234");
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildFactoryUsageLines tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("buildFactoryUsageLines", () => {
+	test("renders header with Factory prefix, label, email, org", () => {
+		const account = { label: "work", email: "dev@company.com", org: "org_01XYZ", source: "/home/user/.factory/auth.v2.file" };
+		const payload = {
+			success: true,
+			usage: {
+				used: 5000000,
+				limit: 20000000,
+				percent: 25,
+				billingPeriod: { start: "2026-03-01", end: "2026-03-31" },
+				byModel: [],
+			},
+		};
+		const lines = buildFactoryUsageLines(account, payload, {});
+		expect(lines[0]).toContain("Factory");
+		expect(lines[0]).toContain("(work)");
+		expect(lines[0]).toContain("<dev@company.com>");
+		expect(lines[0]).toContain("org_01XYZ");
+	});
+
+	test("renders usage bar with percent and formatted token counts", () => {
+		const account = { label: "work", source: "/home/user/.factory/auth.v2.file" };
+		const payload = {
+			success: true,
+			usage: {
+				used: 5000000,
+				limit: 20000000,
+				percent: 25,
+				billingPeriod: { start: "2026-03-01", end: "2026-03-31" },
+				byModel: [],
+			},
+		};
+		const lines = buildFactoryUsageLines(account, payload, {});
+		const barLine = lines.find(l => l.includes("[") && l.includes("]") && (l.includes("left") || l.includes("used")));
+		expect(barLine).toBeDefined();
+		expect(barLine).toContain("75% left");
+		expect(barLine).toContain("5,000,000");
+		expect(barLine).toContain("20,000,000");
+	});
+
+	test("renders per-model breakdown when byModel has data", () => {
+		const account = { label: "work", source: "/home/user/.factory/auth.v2.file" };
+		const payload = {
+			success: true,
+			usage: {
+				used: 10000000,
+				limit: 20000000,
+				percent: 50,
+				billingPeriod: { start: "2026-03-01", end: "2026-03-31" },
+				byModel: [
+					{ model_id: "claude-sonnet-4-20250514", billable_tokens: 8000000 },
+					{ model_id: "claude-opus-4-20250514", billable_tokens: 2000000 },
+				],
+			},
+		};
+		const lines = buildFactoryUsageLines(account, payload, {});
+		const sonnetLine = lines.find(l => l.includes("claude-sonnet-4-20250514"));
+		const opusLine = lines.find(l => l.includes("claude-opus-4-20250514"));
+		expect(sonnetLine).toBeDefined();
+		expect(sonnetLine).toContain("8,000,000");
+		expect(opusLine).toBeDefined();
+		expect(opusLine).toContain("2,000,000");
+	});
+
+	test("omits model section when byModel is empty", () => {
+		const account = { label: "work", source: "/home/user/.factory/auth.v2.file" };
+		const payload = {
+			success: true,
+			usage: {
+				used: 5000000,
+				limit: 20000000,
+				percent: 25,
+				billingPeriod: { start: "2026-03-01", end: "2026-03-31" },
+				byModel: [],
+			},
+		};
+		const lines = buildFactoryUsageLines(account, payload, {});
+		// Should not contain any model-specific line
+		expect(lines.some(l => l.includes("model"))).toBe(false);
+	});
+
+	test("renders billing period line", () => {
+		const account = { label: "work", source: "/home/user/.factory/auth.v2.file" };
+		const payload = {
+			success: true,
+			usage: {
+				used: 1000000,
+				limit: 20000000,
+				percent: 5,
+				billingPeriod: { start: "2026-03-01", end: "2026-03-31" },
+				byModel: [],
+			},
+		};
+		const lines = buildFactoryUsageLines(account, payload, {});
+		const periodLine = lines.find(l => l.includes("2026-03-01") && l.includes("2026-03-31"));
+		expect(periodLine).toBeDefined();
+	});
+
+	test("renders source line with shortened path", () => {
+		const home = homedir();
+		const account = { label: "work", source: join(home, ".factory", "auth.v2.file") };
+		const payload = {
+			success: true,
+			usage: {
+				used: 1000000,
+				limit: 20000000,
+				percent: 5,
+				billingPeriod: { start: "2026-03-01", end: "2026-03-31" },
+				byModel: [],
+			},
+		};
+		const lines = buildFactoryUsageLines(account, payload, {});
+		const sourceLine = lines.find(l => l.includes("Source:"));
+		expect(sourceLine).toBeDefined();
+		expect(sourceLine).toContain("~/.factory/auth.v2.file");
+	});
+
+	test("shows error line when payload has error", () => {
+		const account = { label: "work", source: "/home/user/.factory/auth.v2.file" };
+		const payload = { success: false, error: "HTTP 403: Analytics API is not enabled" };
+		const lines = buildFactoryUsageLines(account, payload, {});
+		const errorLine = lines.find(l => l.includes("Error:"));
+		expect(errorLine).toBeDefined();
+		expect(errorLine).toContain("HTTP 403");
+	});
+
+	test("shows error line when payload is null/missing", () => {
+		const account = { label: "work", source: "/home/user/.factory/auth.v2.file" };
+		const lines = buildFactoryUsageLines(account, null, {});
+		const errorLine = lines.find(l => l.includes("Error:"));
+		expect(errorLine).toBeDefined();
+	});
+
+	test("clamps usage > limit to 0% remaining (no negative)", () => {
+		const account = { label: "work", source: "/home/user/.factory/auth.v2.file" };
+		const payload = {
+			success: true,
+			usage: {
+				used: 25000000,
+				limit: 20000000,
+				percent: 100,
+				billingPeriod: { start: "2026-03-01", end: "2026-03-31" },
+				byModel: [],
+			},
+		};
+		const lines = buildFactoryUsageLines(account, payload, {});
+		const barLine = lines.find(l => l.includes("[") && l.includes("]"));
+		expect(barLine).toBeDefined();
+		expect(barLine).toContain("0% left");
+		// Should not contain negative percentage
+		expect(barLine).not.toMatch(/-\d+%/);
+	});
+
+	test("handles zero limit (shows 'no limit set')", () => {
+		const account = { label: "work", source: "/home/user/.factory/auth.v2.file" };
+		const payload = {
+			success: true,
+			usage: {
+				used: 5000000,
+				limit: 0,
+				percent: 0,
+				billingPeriod: { start: "2026-03-01", end: "2026-03-31" },
+				byModel: [],
+			},
+		};
+		const lines = buildFactoryUsageLines(account, payload, {});
+		const noLimitLine = lines.find(l => l.toLowerCase().includes("no limit"));
+		expect(noLimitLine).toBeDefined();
+	});
+
+	test("respects --no-color flag (no ANSI codes)", () => {
+		setNoColorFlag(true);
+		try {
+			const account = { label: "work", email: "dev@co.com", source: "/tmp/test" };
+			const payload = {
+				success: true,
+				usage: {
+					used: 5000000,
+					limit: 20000000,
+					percent: 25,
+					billingPeriod: { start: "2026-03-01", end: "2026-03-31" },
+					byModel: [],
+				},
+			};
+			const lines = buildFactoryUsageLines(account, payload, { noColor: true });
+			const allText = lines.join("\n");
+			// No ANSI escape codes
+			expect(allText).not.toMatch(/\x1b\[/);
+		} finally {
+			setNoColorFlag(false);
+		}
+	});
+
+	test("renders correctly without optional fields (no email, no org)", () => {
+		const account = { label: "default", source: "/tmp/test" };
+		const payload = {
+			success: true,
+			usage: {
+				used: 1000,
+				limit: 20000000,
+				percent: 0,
+				billingPeriod: { start: "2026-03-01", end: "2026-03-31" },
+				byModel: [],
+			},
+		};
+		const lines = buildFactoryUsageLines(account, payload, {});
+		expect(lines[0]).toContain("Factory");
+		expect(lines[0]).toContain("(default)");
+		// Should not have empty angle brackets or empty parens for missing fields
+		expect(lines[0]).not.toContain("<>");
+		expect(lines[0]).not.toContain("()");
+	});
+
+	test("includes source in error display", () => {
+		const account = { label: "work", source: "/home/user/.factory/auth.v2.file" };
+		const payload = { success: false, error: "Request timed out" };
+		const lines = buildFactoryUsageLines(account, payload, {});
+		const sourceLine = lines.find(l => l.includes("Source:"));
+		expect(sourceLine).toBeDefined();
+	});
+
+	test("handles payload with missing usage object", () => {
+		const account = { label: "work", source: "/tmp/test" };
+		const payload = { success: true }; // no usage object
+		const lines = buildFactoryUsageLines(account, payload, {});
+		// Should not crash, should show some kind of error or empty state
+		expect(Array.isArray(lines)).toBe(true);
+		expect(lines.length).toBeGreaterThan(0);
+	});
+
+	test("header without label shows just Factory", () => {
+		const account = { email: "dev@co.com", source: "/tmp/test" };
+		const payload = {
+			success: true,
+			usage: {
+				used: 0,
+				limit: 20000000,
+				percent: 0,
+				billingPeriod: { start: "2026-03-01", end: "2026-03-31" },
+				byModel: [],
+			},
+		};
+		const lines = buildFactoryUsageLines(account, payload, {});
+		expect(lines[0]).toMatch(/^Factory/);
+		expect(lines[0]).toContain("<dev@co.com>");
+	});
+
+	test("100% usage shows full bar and 0% left", () => {
+		const account = { label: "work", source: "/tmp/test" };
+		const payload = {
+			success: true,
+			usage: {
+				used: 20000000,
+				limit: 20000000,
+				percent: 100,
+				billingPeriod: { start: "2026-03-01", end: "2026-03-31" },
+				byModel: [],
+			},
+		};
+		const lines = buildFactoryUsageLines(account, payload, {});
+		const barLine = lines.find(l => l.includes("[") && l.includes("]"));
+		expect(barLine).toBeDefined();
+		expect(barLine).toContain("0% left");
+	});
+
+	test("0% usage shows empty bar and 100% left", () => {
+		const account = { label: "work", source: "/tmp/test" };
+		const payload = {
+			success: true,
+			usage: {
+				used: 0,
+				limit: 20000000,
+				percent: 0,
+				billingPeriod: { start: "2026-03-01", end: "2026-03-31" },
+				byModel: [],
+			},
+		};
+		const lines = buildFactoryUsageLines(account, payload, {});
+		const barLine = lines.find(l => l.includes("[") && l.includes("]"));
+		expect(barLine).toBeDefined();
+		expect(barLine).toContain("100% left");
 	});
 });

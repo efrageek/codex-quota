@@ -241,6 +241,8 @@ export {
 	printHelpList,
 	printHelpRemove,
 	printHelpQuota,
+	formatTokenCount,
+	buildFactoryUsageLines,
 } from "./lib/display.js";
 
 // Subcommand handlers (for testing)
