@@ -1,0 +1,34 @@
+# User Testing
+
+Testing surface, validation approach, and resource cost classification.
+
+**What belongs here:** How to test the application, what surfaces exist, setup needed for validation.
+**What does NOT belong here:** Test implementation details (those go in the test file).
+
+---
+
+## Validation Surface
+- **Surface type:** Terminal CLI
+- **Tool:** Direct CLI execution (`node codex-quota.js ...`)
+- **What to check:** stdout content, stderr content, exit codes, file state (container files, auth.v2 files)
+
+## Testing Approach
+- Run CLI commands and check output format, content, exit codes
+- Check file system state after operations (container JSON, auth files, permissions)
+- **Limitation:** Factory Analytics API returns 403 for test org. All API interactions are tested with mocked responses in unit tests.
+
+## Validation Concurrency
+- **Max concurrent validators:** 5
+- **Rationale:** CLI tool with no services, each test is a quick process execution. Machine has 124GB RAM, 24 cores — no resource constraints.
+
+## CLI Commands to Test
+```
+node codex-quota.js                          # default view (all providers)
+node codex-quota.js factory quota            # Factory-only quota
+node codex-quota.js factory quota --json     # JSON output
+node codex-quota.js factory quota --billing-day 15  # Custom billing
+node codex-quota.js factory list             # List accounts
+node codex-quota.js factory add              # Add account flow
+node codex-quota.js factory switch <label>   # Switch active account
+node codex-quota.js factory remove <label>   # Remove account
+```
