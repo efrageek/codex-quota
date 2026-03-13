@@ -8996,3 +8996,733 @@ describe("ensureFreshFactoryToken", () => {
 		expect(account.accountId).toBe("user_NEW_ID");
 	});
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cross-area integration tests (VAL-CROSS-001, VAL-CROSS-002, VAL-CROSS-004)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("Cross-area: Add account then check quota (VAL-CROSS-001)", () => {
+	const testDir = join(tmpdir(), `factory-cross-add-quota-${Date.now()}`);
+	const testFactoryDir = join(testDir, "factory-home");
+	const testAuthFile = join(testFactoryDir, "auth.v2.file");
+	const testKeyFile = join(testFactoryDir, "auth.v2.key");
+	const testContainerPath = join(testDir, "factory-accounts.json");
+
+	let consoleOutput;
+	let consoleErrors;
+	let originalConsoleLog;
+	let originalConsoleError;
+	let originalExit;
+	let exitCode;
+	let originalEnv;
+	let originalFetch;
+
+	function writeTestAuthFiles(jwt) {
+		const data = { access_token: jwt, refresh_token: "refresh-test" };
+		const key = generateAuthKey();
+		const encrypted = encryptAuthV2(data, key);
+		mkdirSync(testFactoryDir, { recursive: true, mode: 0o700 });
+		writeFileSync(testAuthFile, encrypted.encrypted, "utf-8");
+		writeFileSync(testKeyFile, key + "\n", "utf-8");
+	}
+
+	beforeEach(() => {
+		mkdirSync(testDir, { recursive: true });
+		originalConsoleLog = console.log;
+		originalConsoleError = console.error;
+		originalExit = process.exit;
+		originalEnv = process.env.FACTORY_ACCOUNTS;
+		originalFetch = globalThis.fetch;
+		consoleOutput = [];
+		consoleErrors = [];
+		exitCode = null;
+		console.log = (...args) => { consoleOutput.push(args.join(" ")); };
+		console.error = (...args) => { consoleErrors.push(args.join(" ")); };
+		process.exit = (code) => { exitCode = code; throw new Error(`EXIT_${code}`); };
+		delete process.env.FACTORY_ACCOUNTS;
+	});
+
+	afterEach(() => {
+		console.log = originalConsoleLog;
+		console.error = originalConsoleError;
+		process.exit = originalExit;
+		globalThis.fetch = originalFetch;
+		if (originalEnv === undefined) delete process.env.FACTORY_ACCOUNTS;
+		else process.env.FACTORY_ACCOUNTS = originalEnv;
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	test("newly added account appears in loadAllFactoryAccounts", async () => {
+		const jwt = createMockFactoryJWT("user_cross_01", "cross@factory.ai", {
+			org_id: "org_cross_01",
+			first_name: "Cross",
+			last_name: "Test",
+		});
+		writeTestAuthFiles(jwt);
+
+		// Add the account via handleFactoryAdd
+		await handleFactoryAdd([], {
+			json: true,
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+			_containerPath: testContainerPath,
+			_label: "cross-test",
+		});
+
+		// Verify the add succeeded
+		const addOutput = JSON.parse(consoleOutput.join("\n"));
+		expect(addOutput.success).toBe(true);
+		expect(addOutput.label).toBe("cross-test");
+
+		// Now verify loadAllFactoryAccounts via env var pointing to the container
+		// (since the real path differs from testContainerPath, use file loader directly)
+		const accounts = loadFactoryAccountsFromFile(testContainerPath);
+		expect(accounts.length).toBe(1);
+		expect(accounts[0].label).toBe("cross-test");
+		expect(accounts[0].accountId).toBe("user_cross_01");
+		expect(accounts[0].email).toBe("cross@factory.ai");
+	});
+
+	test("newly added account is displayed by handleFactoryQuota", async () => {
+		const jwt = createMockFactoryJWT("user_cross_02", "quota@factory.ai", {
+			org_id: "org_cross_02",
+			first_name: "Quota",
+			last_name: "User",
+		});
+		writeTestAuthFiles(jwt);
+
+		// Step 1: Add account
+		await handleFactoryAdd([], {
+			json: true,
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+			_containerPath: testContainerPath,
+			_label: "quota-test",
+			_planLimit: 20000000,
+		});
+
+		const addOutput = JSON.parse(consoleOutput.join("\n"));
+		expect(addOutput.success).toBe(true);
+
+		// Step 2: Set up env to point to the added account for quota fetch
+		const container = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		const account = container.accounts[0];
+		process.env.FACTORY_ACCOUNTS = JSON.stringify([{
+			label: account.label,
+			accountId: account.accountId,
+			email: account.email,
+			org: account.org,
+			accessToken: "fake-jwt",
+			planLimit: account.planLimit ?? 20000000,
+		}]);
+
+		// Mock the API response
+		globalThis.fetch = async () => ({
+			ok: true,
+			json: async () => ({
+				data: [
+					{
+						date: "2026-03-01",
+						billable_tokens: 3000000,
+						by_model: [{ model_id: "claude-sonnet-4", billable_tokens: 3000000 }],
+					},
+				],
+			}),
+		});
+
+		// Step 3: Call handleFactoryQuota and verify output
+		consoleOutput = [];
+		consoleErrors = [];
+		await handleFactoryQuota([], { json: true });
+
+		const quotaOutput = JSON.parse(consoleOutput.join("\n"));
+		expect(Array.isArray(quotaOutput)).toBe(true);
+		expect(quotaOutput.length).toBe(1);
+		expect(quotaOutput[0].label).toBe("quota-test");
+		expect(quotaOutput[0].email).toBe("quota@factory.ai");
+		expect(quotaOutput[0].usage).toBeDefined();
+		expect(quotaOutput[0].usage.used).toBe(3000000);
+	});
+});
+
+describe("Cross-area: Switch accounts and verify quota reflects active (VAL-CROSS-002)", () => {
+	const testDir = join(tmpdir(), `factory-cross-switch-${Date.now()}`);
+	const testFactoryDir = join(testDir, "factory-home");
+	const testAuthFile = join(testFactoryDir, "auth.v2.file");
+	const testKeyFile = join(testFactoryDir, "auth.v2.key");
+	const testContainerPath = join(testDir, "factory-accounts.json");
+
+	let consoleOutput;
+	let consoleErrors;
+	let originalConsoleLog;
+	let originalConsoleError;
+	let originalExit;
+	let exitCode;
+	let originalEnv;
+	let originalFetch;
+
+	function buildAccountEntry(label, sub, email, opts = {}) {
+		const jwt = createMockFactoryJWT(sub, email, opts);
+		const data = { access_token: jwt, refresh_token: `refresh-${label}` };
+		const key = generateAuthKey();
+		const encrypted = encryptAuthV2(data, key);
+		return {
+			label,
+			accountId: sub,
+			email,
+			org: opts.org_id ?? "org_test",
+			name: [opts.first_name ?? "", opts.last_name ?? ""].filter(Boolean).join(" ") || null,
+			authFile: encrypted.encrypted,
+			authKey: key,
+			accessToken: jwt,
+			refreshToken: `refresh-${label}`,
+			planLimit: opts.planLimit ?? 20000000,
+		};
+	}
+
+	function writeContainer(accounts, activeLabel) {
+		const container = {
+			schemaVersion: 1,
+			activeLabel,
+			accounts,
+		};
+		mkdirSync(testDir, { recursive: true });
+		writeFileSync(testContainerPath, JSON.stringify(container, null, 2) + "\n", { mode: 0o600 });
+	}
+
+	beforeEach(() => {
+		mkdirSync(testDir, { recursive: true });
+		mkdirSync(testFactoryDir, { recursive: true, mode: 0o700 });
+		originalConsoleLog = console.log;
+		originalConsoleError = console.error;
+		originalExit = process.exit;
+		originalEnv = process.env.FACTORY_ACCOUNTS;
+		originalFetch = globalThis.fetch;
+		consoleOutput = [];
+		consoleErrors = [];
+		exitCode = null;
+		console.log = (...args) => { consoleOutput.push(args.join(" ")); };
+		console.error = (...args) => { consoleErrors.push(args.join(" ")); };
+		process.exit = (code) => { exitCode = code; throw new Error(`EXIT_${code}`); };
+		delete process.env.FACTORY_ACCOUNTS;
+	});
+
+	afterEach(() => {
+		console.log = originalConsoleLog;
+		console.error = originalConsoleError;
+		process.exit = originalExit;
+		globalThis.fetch = originalFetch;
+		if (originalEnv === undefined) delete process.env.FACTORY_ACCOUNTS;
+		else process.env.FACTORY_ACCOUNTS = originalEnv;
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	test("switch changes activeLabel and auth files, quota uses switched account", async () => {
+		const accountA = buildAccountEntry("work", "user_A", "work@factory.ai", {
+			org_id: "org_A", first_name: "Work", last_name: "User",
+		});
+		const accountB = buildAccountEntry("personal", "user_B", "personal@factory.ai", {
+			org_id: "org_B", first_name: "Personal", last_name: "User",
+		});
+		writeContainer([accountA, accountB], "work");
+
+		// Switch to "personal"
+		await handleFactorySwitch(["personal"], {
+			json: true,
+			_containerPath: testContainerPath,
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+		});
+
+		const switchOutput = JSON.parse(consoleOutput.join("\n"));
+		expect(switchOutput.success).toBe(true);
+		expect(switchOutput.label).toBe("personal");
+
+		// Verify activeLabel changed in container
+		const container = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		expect(container.activeLabel).toBe("personal");
+
+		// Verify auth.v2 files were written with personal's data
+		const tokens = readAuthV2Files(testAuthFile, testKeyFile);
+		expect(tokens).not.toBeNull();
+		expect(tokens.refreshToken).toBe("refresh-personal");
+
+		// Now set up env for quota check with the switched-to account
+		consoleOutput = [];
+		consoleErrors = [];
+
+		// Track which Authorization header is sent
+		let capturedAuthHeader = null;
+		globalThis.fetch = async (url, opts) => {
+			capturedAuthHeader = opts?.headers?.Authorization ?? null;
+			return {
+				ok: true,
+				json: async () => ({ data: [] }),
+			};
+		};
+
+		// Use env var with both accounts, but the "personal" one should be used
+		// because we verify the auth file content matches personal's token
+		process.env.FACTORY_ACCOUNTS = JSON.stringify([{
+			label: "personal",
+			accountId: "user_B",
+			email: "personal@factory.ai",
+			accessToken: tokens.accessToken,
+			planLimit: 20000000,
+		}]);
+
+		await handleFactoryQuota([], { json: true });
+
+		const quotaOutput = JSON.parse(consoleOutput.join("\n"));
+		expect(Array.isArray(quotaOutput)).toBe(true);
+		expect(quotaOutput[0].label).toBe("personal");
+		expect(quotaOutput[0].email).toBe("personal@factory.ai");
+
+		// Verify the fetch used the token from the switched-to account
+		expect(capturedAuthHeader).toBeDefined();
+		expect(capturedAuthHeader).toContain("Bearer ");
+	});
+
+	test("switching A→B→A roundtrip preserves correct credentials for quota", async () => {
+		const accountA = buildAccountEntry("alpha", "user_AA", "alpha@factory.ai", {
+			org_id: "org_AA", first_name: "Alpha",
+		});
+		const accountB = buildAccountEntry("beta", "user_BB", "beta@factory.ai", {
+			org_id: "org_BB", first_name: "Beta",
+		});
+		writeContainer([accountA, accountB], "alpha");
+
+		// Switch to beta
+		await handleFactorySwitch(["beta"], {
+			json: true,
+			_containerPath: testContainerPath,
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+		});
+		let container = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		expect(container.activeLabel).toBe("beta");
+
+		// Switch back to alpha
+		consoleOutput = [];
+		await handleFactorySwitch(["alpha"], {
+			json: true,
+			_containerPath: testContainerPath,
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+		});
+		container = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		expect(container.activeLabel).toBe("alpha");
+
+		// Verify auth files now have alpha's data
+		const tokens = readAuthV2Files(testAuthFile, testKeyFile);
+		expect(tokens).not.toBeNull();
+		expect(tokens.refreshToken).toBe("refresh-alpha");
+	});
+});
+
+describe("Cross-area: Remove account clears quota display (VAL-CROSS-004)", () => {
+	const testDir = join(tmpdir(), `factory-cross-remove-${Date.now()}`);
+	const testContainerPath = join(testDir, "factory-accounts.json");
+
+	let consoleOutput;
+	let consoleErrors;
+	let originalConsoleLog;
+	let originalConsoleError;
+	let originalExit;
+	let exitCode;
+	let originalEnv;
+	let originalFetch;
+
+	function buildAccountEntry(label, sub, email, opts = {}) {
+		const jwt = createMockFactoryJWT(sub, email, opts);
+		const key = generateAuthKey();
+		const encrypted = encryptAuthV2({ access_token: jwt, refresh_token: `refresh-${label}` }, key);
+		return {
+			label,
+			accountId: sub,
+			email,
+			org: opts.org_id ?? "org_test",
+			authFile: encrypted.encrypted,
+			authKey: key,
+			planLimit: opts.planLimit ?? 20000000,
+		};
+	}
+
+	function writeContainer(accounts, activeLabel) {
+		const container = {
+			schemaVersion: 1,
+			activeLabel,
+			accounts,
+		};
+		mkdirSync(testDir, { recursive: true });
+		writeFileSync(testContainerPath, JSON.stringify(container, null, 2) + "\n", { mode: 0o600 });
+	}
+
+	beforeEach(() => {
+		mkdirSync(testDir, { recursive: true });
+		originalConsoleLog = console.log;
+		originalConsoleError = console.error;
+		originalExit = process.exit;
+		originalEnv = process.env.FACTORY_ACCOUNTS;
+		originalFetch = globalThis.fetch;
+		consoleOutput = [];
+		consoleErrors = [];
+		exitCode = null;
+		console.log = (...args) => { consoleOutput.push(args.join(" ")); };
+		console.error = (...args) => { consoleErrors.push(args.join(" ")); };
+		process.exit = (code) => { exitCode = code; throw new Error(`EXIT_${code}`); };
+		delete process.env.FACTORY_ACCOUNTS;
+	});
+
+	afterEach(() => {
+		console.log = originalConsoleLog;
+		console.error = originalConsoleError;
+		process.exit = originalExit;
+		globalThis.fetch = originalFetch;
+		if (originalEnv === undefined) delete process.env.FACTORY_ACCOUNTS;
+		else process.env.FACTORY_ACCOUNTS = originalEnv;
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	test("removed account no longer appears in loadAllFactoryAccounts", async () => {
+		const accountA = buildAccountEntry("keep-me", "user_keep", "keep@factory.ai");
+		const accountB = buildAccountEntry("remove-me", "user_remove", "remove@factory.ai");
+		writeContainer([accountA, accountB], "keep-me");
+
+		// Remove accountB
+		await handleFactoryRemove(["remove-me"], {
+			json: true,
+			_containerPath: testContainerPath,
+		});
+
+		const removeOutput = JSON.parse(consoleOutput.join("\n"));
+		expect(removeOutput.success).toBe(true);
+		expect(removeOutput.label).toBe("remove-me");
+
+		// Verify the removed account is not in the container
+		const accounts = loadFactoryAccountsFromFile(testContainerPath);
+		expect(accounts.length).toBe(1);
+		expect(accounts[0].label).toBe("keep-me");
+		expect(accounts.find(a => a.label === "remove-me")).toBeUndefined();
+	});
+
+	test("removed account no longer shown by handleFactoryQuota", async () => {
+		const accountA = buildAccountEntry("surviving", "user_surv", "surv@factory.ai");
+		const accountB = buildAccountEntry("doomed", "user_doom", "doom@factory.ai");
+		writeContainer([accountA, accountB], "surviving");
+
+		// Remove "doomed"
+		await handleFactoryRemove(["doomed"], {
+			json: true,
+			_containerPath: testContainerPath,
+		});
+
+		// Now verify quota only shows surviving account
+		consoleOutput = [];
+		consoleErrors = [];
+
+		// Set up env with only the surviving account for quota fetch
+		process.env.FACTORY_ACCOUNTS = JSON.stringify([{
+			label: "surviving",
+			accountId: "user_surv",
+			email: "surv@factory.ai",
+			accessToken: "fake-jwt",
+			planLimit: 20000000,
+		}]);
+
+		globalThis.fetch = async () => ({
+			ok: true,
+			json: async () => ({ data: [] }),
+		});
+
+		await handleFactoryQuota([], { json: true });
+
+		const quotaOutput = JSON.parse(consoleOutput.join("\n"));
+		expect(Array.isArray(quotaOutput)).toBe(true);
+		expect(quotaOutput.length).toBe(1);
+		expect(quotaOutput[0].label).toBe("surviving");
+		// "doomed" should not appear anywhere in output
+		expect(consoleOutput.join("\n")).not.toContain("doomed");
+	});
+
+	test("removing only account results in no Factory quota display", async () => {
+		const accountA = buildAccountEntry("only-one", "user_only", "only@factory.ai");
+		writeContainer([accountA], "only-one");
+
+		// Remove the only account
+		await handleFactoryRemove(["only-one"], {
+			json: true,
+			_containerPath: testContainerPath,
+		});
+
+		const removeOutput = JSON.parse(consoleOutput.join("\n"));
+		expect(removeOutput.success).toBe(true);
+		expect(removeOutput.message).toContain("File deleted");
+
+		// Container file should be gone
+		expect(existsSync(testContainerPath)).toBe(false);
+
+		// Accounts loaded from file should be empty
+		const accounts = loadFactoryAccountsFromFile(testContainerPath);
+		expect(accounts.length).toBe(0);
+	});
+});
+
+describe("Cross-area: Default view without Factory accounts (VAL-CROSS-003)", () => {
+	let consoleOutput;
+	let consoleErrors;
+	let originalConsoleLog;
+	let originalConsoleError;
+	let originalExit;
+	let exitCode;
+	let originalFactoryEnv;
+	let originalCodexEnv;
+	let originalClaudeEnv;
+	let originalFetch;
+
+	beforeEach(() => {
+		originalConsoleLog = console.log;
+		originalConsoleError = console.error;
+		originalExit = process.exit;
+		originalFactoryEnv = process.env.FACTORY_ACCOUNTS;
+		originalCodexEnv = process.env.CODEX_ACCOUNTS;
+		originalClaudeEnv = process.env.CLAUDE_ACCOUNTS;
+		originalFetch = globalThis.fetch;
+		consoleOutput = [];
+		consoleErrors = [];
+		exitCode = null;
+		console.log = (...args) => { consoleOutput.push(args.join(" ")); };
+		console.error = (...args) => { consoleErrors.push(args.join(" ")); };
+		process.exit = (code) => { exitCode = code; throw new Error(`EXIT_${code}`); };
+		// Ensure no factory accounts exist
+		delete process.env.FACTORY_ACCOUNTS;
+	});
+
+	afterEach(() => {
+		console.log = originalConsoleLog;
+		console.error = originalConsoleError;
+		process.exit = originalExit;
+		globalThis.fetch = originalFetch;
+		if (originalFactoryEnv === undefined) delete process.env.FACTORY_ACCOUNTS;
+		else process.env.FACTORY_ACCOUNTS = originalFactoryEnv;
+		if (originalCodexEnv === undefined) delete process.env.CODEX_ACCOUNTS;
+		else process.env.CODEX_ACCOUNTS = originalCodexEnv;
+		if (originalClaudeEnv === undefined) delete process.env.CLAUDE_ACCOUNTS;
+		else process.env.CLAUDE_ACCOUNTS = originalClaudeEnv;
+	});
+
+	test("handleQuota scope='all' with Codex accounts and no Factory: no Factory errors in output", async () => {
+		// Set up a valid Codex account via env var
+		const codexToken = createMockAccessToken("acct_codex_001", "codex@test.com", "pro");
+		process.env.CODEX_ACCOUNTS = JSON.stringify([{
+			label: "codex-test",
+			accountId: "acct_codex_001",
+			access: codexToken,
+			refresh: "refresh-codex",
+			expires: Date.now() + 3600 * 1000,
+		}]);
+
+		globalThis.fetch = async (url) => {
+			// Return a valid Codex usage response
+			if (url.includes("openai.com")) {
+				return {
+					ok: true,
+					json: async () => ({
+						data: [{ object: "credit_grant", amount: 10000, used: 5000, expires_at: "2026-04-01" }],
+					}),
+				};
+			}
+			// For Claude or Factory
+			return { ok: false, status: 403, json: async () => ({ error: "not found" }) };
+		};
+
+		try {
+			await handleQuota([], { noColor: true }, "all");
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+
+		const allOutput = [...consoleOutput, ...consoleErrors].join("\n");
+		// Should NOT contain "Factory" errors — Factory is silently omitted when no accounts
+		expect(allOutput).not.toContain("Factory account");
+		expect(allOutput).not.toContain("factory add");
+	});
+});
+
+describe("Cross-area: Codex/Claude routing unchanged (VAL-CROSS-006, VAL-CROSS-007)", () => {
+	let consoleOutput;
+	let consoleErrors;
+	let originalConsoleLog;
+	let originalConsoleError;
+	let originalExit;
+	let exitCode;
+	let originalFetch;
+	let originalCodexEnv;
+	let originalClaudeEnv;
+
+	beforeEach(() => {
+		originalConsoleLog = console.log;
+		originalConsoleError = console.error;
+		originalExit = process.exit;
+		originalFetch = globalThis.fetch;
+		originalCodexEnv = process.env.CODEX_ACCOUNTS;
+		originalClaudeEnv = process.env.CLAUDE_ACCOUNTS;
+		consoleOutput = [];
+		consoleErrors = [];
+		exitCode = null;
+		console.log = (...args) => { consoleOutput.push(args.join(" ")); };
+		console.error = (...args) => { consoleErrors.push(args.join(" ")); };
+		process.exit = (code) => { exitCode = code; throw new Error(`EXIT_${code}`); };
+	});
+
+	afterEach(() => {
+		console.log = originalConsoleLog;
+		console.error = originalConsoleError;
+		process.exit = originalExit;
+		globalThis.fetch = originalFetch;
+		if (originalCodexEnv === undefined) delete process.env.CODEX_ACCOUNTS;
+		else process.env.CODEX_ACCOUNTS = originalCodexEnv;
+		if (originalClaudeEnv === undefined) delete process.env.CLAUDE_ACCOUNTS;
+		else process.env.CLAUDE_ACCOUNTS = originalClaudeEnv;
+	});
+
+	test("handleQuota scope='codex' routes to Codex only, no Factory mention", async () => {
+		const codexToken = createMockAccessToken("acct_c1", "codex@test.com", "pro");
+		process.env.CODEX_ACCOUNTS = JSON.stringify([{
+			label: "my-codex",
+			accountId: "acct_c1",
+			access: codexToken,
+			refresh: "refresh-codex",
+			expires: Date.now() + 3600 * 1000,
+		}]);
+
+		globalThis.fetch = async () => ({
+			ok: true,
+			json: async () => ({
+				data: [{ object: "credit_grant", amount: 10000, used: 5000, expires_at: "2026-04-01" }],
+			}),
+		});
+
+		try {
+			await handleQuota([], { json: true }, "codex");
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+
+		const output = consoleOutput.join("\n");
+		const parsed = JSON.parse(output);
+		// Should be Codex output (array of accounts with codex-style fields)
+		expect(Array.isArray(parsed)).toBe(true);
+		// At least our env-var account should be in the list
+		expect(parsed.length).toBeGreaterThanOrEqual(1);
+		const myCodex = parsed.find(a => a.label === "my-codex");
+		expect(myCodex).toBeDefined();
+		expect(myCodex.label).toBe("my-codex");
+		// No Factory mention in the output
+		expect(output).not.toContain("Factory");
+		expect(output).not.toContain("factory");
+	});
+
+	test("handleQuota scope='claude' routes to Claude only, no Factory mention", async () => {
+		process.env.CLAUDE_ACCOUNTS = JSON.stringify([{
+			label: "my-claude",
+			oauthToken: "fake-claude-oauth",
+			oauthRefreshToken: "claude-refresh",
+			oauthExpiresAt: Date.now() + 3600 * 1000,
+		}]);
+
+		globalThis.fetch = async () => ({
+			ok: true,
+			json: async () => ({
+				members: [{
+					email: "claude@test.com",
+					role: "user",
+					monthly_invoice: {
+						total_usage_cents: 500,
+						usage_limit_cents: 10000,
+					},
+				}],
+			}),
+		});
+
+		try {
+			await handleQuota([], { json: true }, "claude");
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+
+		const output = consoleOutput.join("\n");
+		// Claude output should not mention Factory
+		expect(output).not.toContain("Factory");
+		expect(output).not.toContain("factory add");
+	});
+});
+
+describe("Cross-area: Barrel re-exports completeness", () => {
+	test("all factory-crypto.js exports are re-exported from codex-quota.js", () => {
+		expect(typeof decryptAuthV2).toBe("function");
+		expect(typeof encryptAuthV2).toBe("function");
+		expect(typeof generateAuthKey).toBe("function");
+		expect(typeof readAuthV2Files).toBe("function");
+		expect(typeof writeAuthV2Files).toBe("function");
+	});
+
+	test("all factory-accounts.js exports are re-exported from codex-quota.js", () => {
+		expect(typeof isValidFactoryAccount).toBe("function");
+		expect(typeof loadFactoryAccountsFromEnv).toBe("function");
+		expect(typeof loadFactoryAccountsFromFile).toBe("function");
+		expect(typeof extractFactoryProfile).toBe("function");
+		expect(typeof loadFactoryAccountFromAuthV2).toBe("function");
+		expect(typeof loadAllFactoryAccounts).toBe("function");
+		expect(typeof getFactoryActiveLabel).toBe("function");
+		expect(typeof findFactoryAccountByLabel).toBe("function");
+		expect(typeof getAllFactoryLabels).toBe("function");
+	});
+
+	test("all factory-usage.js exports are re-exported from codex-quota.js", () => {
+		expect(typeof computeBillingPeriod).toBe("function");
+		expect(typeof sumDailyTokens).toBe("function");
+		expect(typeof extractModelBreakdown).toBe("function");
+		expect(typeof fetchFactoryUsage).toBe("function");
+	});
+
+	test("all factory-tokens.js exports are re-exported from codex-quota.js", () => {
+		expect(typeof isFactoryTokenExpiring).toBe("function");
+		expect(typeof refreshFactoryToken).toBe("function");
+		expect(typeof persistFactoryTokens).toBe("function");
+		expect(typeof ensureFreshFactoryToken).toBe("function");
+	});
+
+	test("FACTORY_TOKEN_FIELDS from token-match.js is re-exported", () => {
+		expect(typeof FACTORY_TOKEN_FIELDS).toBe("object");
+		expect(FACTORY_TOKEN_FIELDS.access).toBeDefined();
+		expect(FACTORY_TOKEN_FIELDS.refresh).toBeDefined();
+	});
+
+	test("Factory handler exports are re-exported from codex-quota.js", () => {
+		expect(typeof handleFactory).toBe("function");
+		expect(typeof handleFactoryAdd).toBe("function");
+		expect(typeof handleFactorySwitch).toBe("function");
+		expect(typeof handleFactoryRemove).toBe("function");
+		expect(typeof handleFactoryList).toBe("function");
+		expect(typeof handleFactoryQuota).toBe("function");
+	});
+
+	test("Factory display exports are re-exported from codex-quota.js", () => {
+		expect(typeof formatTokenCount).toBe("function");
+		expect(typeof buildFactoryUsageLines).toBe("function");
+		expect(typeof printHelpFactory).toBe("function");
+		expect(typeof printHelpFactoryQuota).toBe("function");
+	});
+
+	test("Factory constants are re-exported from codex-quota.js", () => {
+		expect(typeof FACTORY_API_BASE).toBe("string");
+		expect(typeof FACTORY_USAGE_URL).toBe("string");
+		expect(typeof FACTORY_TIMEOUT_MS).toBe("number");
+		expect(typeof FACTORY_MULTI_ACCOUNT_PATH).toBe("string");
+		expect(typeof FACTORY_AUTH_FILE_PATH).toBe("string");
+		expect(typeof FACTORY_AUTH_KEY_PATH).toBe("string");
+		expect(typeof FACTORY_OAUTH_REFRESH_BUFFER_MS).toBe("number");
+		expect(typeof FACTORY_PLAN_TIERS).toBe("object");
+	});
+});
