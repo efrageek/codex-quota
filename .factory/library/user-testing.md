@@ -32,3 +32,29 @@ node codex-quota.js factory add              # Add account flow
 node codex-quota.js factory switch <label>   # Switch active account
 node codex-quota.js factory remove <label>   # Remove account
 ```
+
+## Flow Validator Guidance: Terminal CLI
+
+### Testing Method
+Each flow validator verifies assertions by:
+1. **Running targeted unit tests** via `bun test --grep "<pattern>"` to check function-level correctness
+2. **Running CLI commands** via `node codex-quota.js <args>` and checking stdout/stderr/exit code
+3. **Inspecting source code** to verify implementation details (imports, patterns, conventions)
+
+### Isolation Rules
+- Each validator operates independently — no shared mutable state
+- CLI commands are read-only (no Factory accounts configured in this environment, so no file mutations)
+- Unit tests use temp directories and mock data, so they don't interfere
+- The Factory Analytics API is not enabled (returns 403) — this is expected and documented
+
+### Key Test Patterns
+- Tests import from `./codex-quota.js` (barrel re-exports)
+- Test groups are organized by `describe()` blocks with descriptive names
+- Use `bun test --grep "<describe-name>"` to run specific groups
+- 5 pre-existing test failures on `startCallbackServer` (port 1455 in use) — these are NOT related to Factory features
+
+### What NOT to do
+- Do NOT attempt to call the Factory Analytics API (it returns 403)
+- Do NOT modify files in `~/.factory/` or `~/.factory-accounts.json`
+- Do NOT modify any source or test files
+- Do NOT install dependencies
