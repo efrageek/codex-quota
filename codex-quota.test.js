@@ -100,6 +100,16 @@ import {
 	generateAuthKey,
 	readAuthV2Files,
 	writeAuthV2Files,
+	// Factory account utilities
+	isValidFactoryAccount,
+	loadFactoryAccountsFromEnv,
+	loadFactoryAccountsFromFile,
+	extractFactoryProfile,
+	loadFactoryAccountFromAuthV2,
+	loadAllFactoryAccounts,
+	getFactoryActiveLabel,
+	findFactoryAccountByLabel,
+	getAllFactoryLabels,
 	printHelp,
 	printHelpAdd,
 	printHelpCodexSync,
@@ -728,6 +738,534 @@ describe("writeAuthV2Files", () => {
 		const content = readFileSync(authFilePath, "utf-8");
 		const parts = content.split(":");
 		expect(parts.length).toBe(3);
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Factory accounts tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Helper to create a WorkOS-style JWT with Factory claims
+function createMockFactoryJWT(sub, email = "dev@factory.ai", opts = {}) {
+	const header = { alg: "RS256", typ: "JWT" };
+	const payload = {
+		sub,
+		email,
+		org_id: opts.org_id ?? "org_01TEST",
+		first_name: opts.first_name ?? "Test",
+		last_name: opts.last_name ?? "User",
+		role: opts.role ?? "member",
+		exp: opts.exp ?? Math.floor(Date.now() / 1000) + 3600,
+		iat: opts.iat ?? Math.floor(Date.now() / 1000),
+	};
+	const headerB64 = Buffer.from(JSON.stringify(header)).toString("base64");
+	const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64");
+	return `${headerB64}.${payloadB64}.fake_signature`;
+}
+
+describe("isValidFactoryAccount", () => {
+	test("returns true for account with label and accountId", () => {
+		expect(isValidFactoryAccount({ label: "work", accountId: "sub_123" })).toBe(true);
+	});
+
+	test("returns true for account with extra fields", () => {
+		expect(isValidFactoryAccount({ label: "work", accountId: "sub_123", email: "a@b.c" })).toBe(true);
+	});
+
+	test("returns false for account missing label", () => {
+		expect(isValidFactoryAccount({ accountId: "sub_123" })).toBe(false);
+	});
+
+	test("returns false for account missing accountId", () => {
+		expect(isValidFactoryAccount({ label: "work" })).toBe(false);
+	});
+
+	test("returns false for null input", () => {
+		expect(isValidFactoryAccount(null)).toBe(false);
+	});
+
+	test("returns false for undefined input", () => {
+		expect(isValidFactoryAccount(undefined)).toBe(false);
+	});
+
+	test("returns false for non-object input", () => {
+		expect(isValidFactoryAccount("not-an-object")).toBe(false);
+	});
+});
+
+describe("extractFactoryProfile", () => {
+	test("extracts email, org, name, accountId from WorkOS JWT", () => {
+		const jwt = createMockFactoryJWT("user_01ABC", "dev@company.com", {
+			org_id: "org_01XYZ",
+			first_name: "Jane",
+			last_name: "Doe",
+		});
+		const profile = extractFactoryProfile(jwt);
+		expect(profile.email).toBe("dev@company.com");
+		expect(profile.org).toBe("org_01XYZ");
+		expect(profile.name).toBe("Jane Doe");
+		expect(profile.accountId).toBe("user_01ABC");
+	});
+
+	test("returns null fields for invalid JWT", () => {
+		const profile = extractFactoryProfile("not-a-jwt");
+		expect(profile.email).toBeNull();
+		expect(profile.org).toBeNull();
+		expect(profile.name).toBeNull();
+		expect(profile.accountId).toBeNull();
+	});
+
+	test("handles JWT with only first_name (no last_name)", () => {
+		const jwt = createMockFactoryJWT("user_02", "a@b.com", {
+			first_name: "Alice",
+			last_name: "",
+		});
+		const profile = extractFactoryProfile(jwt);
+		expect(profile.name).toBe("Alice");
+	});
+
+	test("handles JWT with only last_name (no first_name)", () => {
+		const jwt = createMockFactoryJWT("user_03", "a@b.com", {
+			first_name: "",
+			last_name: "Smith",
+		});
+		const profile = extractFactoryProfile(jwt);
+		expect(profile.name).toBe("Smith");
+	});
+
+	test("returns null name when both first_name and last_name are empty", () => {
+		const jwt = createMockFactoryJWT("user_04", "a@b.com", {
+			first_name: "",
+			last_name: "",
+		});
+		const profile = extractFactoryProfile(jwt);
+		expect(profile.name).toBeNull();
+	});
+
+	test("handles JWT missing optional claims", () => {
+		const header = { alg: "RS256", typ: "JWT" };
+		const payload = { sub: "user_05" }; // only sub, no email/org/name
+		const headerB64 = Buffer.from(JSON.stringify(header)).toString("base64");
+		const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64");
+		const jwt = `${headerB64}.${payloadB64}.sig`;
+		const profile = extractFactoryProfile(jwt);
+		expect(profile.accountId).toBe("user_05");
+		expect(profile.email).toBeNull();
+		expect(profile.org).toBeNull();
+		expect(profile.name).toBeNull();
+	});
+});
+
+describe("loadFactoryAccountsFromEnv", () => {
+	let originalEnv;
+
+	beforeEach(() => {
+		originalEnv = process.env.FACTORY_ACCOUNTS;
+	});
+
+	afterEach(() => {
+		if (originalEnv === undefined) {
+			delete process.env.FACTORY_ACCOUNTS;
+		} else {
+			process.env.FACTORY_ACCOUNTS = originalEnv;
+		}
+	});
+
+	test("returns empty array when FACTORY_ACCOUNTS not set", () => {
+		delete process.env.FACTORY_ACCOUNTS;
+		expect(loadFactoryAccountsFromEnv()).toEqual([]);
+	});
+
+	test("returns empty array for empty string", () => {
+		process.env.FACTORY_ACCOUNTS = "";
+		expect(loadFactoryAccountsFromEnv()).toEqual([]);
+	});
+
+	test("returns accounts from JSON array format", () => {
+		const accounts = [
+			{ label: "work", accountId: "sub_1", email: "a@b.com" },
+			{ label: "personal", accountId: "sub_2", email: "c@d.com" },
+		];
+		process.env.FACTORY_ACCOUNTS = JSON.stringify(accounts);
+		const result = loadFactoryAccountsFromEnv();
+		expect(result.length).toBe(2);
+		expect(result[0].label).toBe("work");
+		expect(result[0].source).toBe("env");
+		expect(result[1].label).toBe("personal");
+		expect(result[1].source).toBe("env");
+	});
+
+	test("returns accounts from {accounts: [...]} format", () => {
+		const data = {
+			accounts: [
+				{ label: "team", accountId: "sub_3" },
+			],
+		};
+		process.env.FACTORY_ACCOUNTS = JSON.stringify(data);
+		const result = loadFactoryAccountsFromEnv();
+		expect(result.length).toBe(1);
+		expect(result[0].label).toBe("team");
+		expect(result[0].source).toBe("env");
+	});
+
+	test("returns empty array for invalid JSON", () => {
+		process.env.FACTORY_ACCOUNTS = "not valid json";
+		const result = loadFactoryAccountsFromEnv();
+		expect(result).toEqual([]);
+	});
+
+	test("filters out invalid accounts (missing label or accountId)", () => {
+		const accounts = [
+			{ label: "valid", accountId: "sub_1" },
+			{ label: "no-id" },          // missing accountId
+			{ accountId: "no-label" },    // missing label
+			{ label: "also-valid", accountId: "sub_2" },
+		];
+		process.env.FACTORY_ACCOUNTS = JSON.stringify(accounts);
+		const result = loadFactoryAccountsFromEnv();
+		expect(result.length).toBe(2);
+		expect(result[0].label).toBe("valid");
+		expect(result[1].label).toBe("also-valid");
+	});
+
+	test("preserves extra fields from accounts", () => {
+		const accounts = [
+			{ label: "work", accountId: "sub_1", email: "a@b.com", planLimit: 20000000 },
+		];
+		process.env.FACTORY_ACCOUNTS = JSON.stringify(accounts);
+		const result = loadFactoryAccountsFromEnv();
+		expect(result[0].email).toBe("a@b.com");
+		expect(result[0].planLimit).toBe(20000000);
+	});
+});
+
+describe("loadFactoryAccountsFromFile", () => {
+	const testDir = join(tmpdir(), `factory-accounts-file-test-${Date.now()}`);
+	const testFilePath = join(testDir, "factory-accounts.json");
+
+	beforeEach(() => {
+		mkdirSync(testDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	test("returns empty array for non-existent file", () => {
+		expect(loadFactoryAccountsFromFile(join(testDir, "does-not-exist.json"))).toEqual([]);
+	});
+
+	test("returns accounts from JSON array format", () => {
+		const accounts = [
+			{ label: "work", accountId: "sub_1" },
+			{ label: "personal", accountId: "sub_2" },
+		];
+		writeFileSync(testFilePath, JSON.stringify(accounts));
+		const result = loadFactoryAccountsFromFile(testFilePath);
+		expect(result.length).toBe(2);
+		expect(result[0].label).toBe("work");
+		expect(result[0].source).toBe(testFilePath);
+	});
+
+	test("returns accounts from {accounts: [...]} format", () => {
+		const data = {
+			schemaVersion: 1,
+			activeLabel: "team",
+			accounts: [
+				{ label: "team", accountId: "sub_3" },
+			],
+		};
+		writeFileSync(testFilePath, JSON.stringify(data));
+		const result = loadFactoryAccountsFromFile(testFilePath);
+		expect(result.length).toBe(1);
+		expect(result[0].label).toBe("team");
+	});
+
+	test("returns empty array for invalid JSON file", () => {
+		writeFileSync(testFilePath, "not valid json");
+		expect(loadFactoryAccountsFromFile(testFilePath)).toEqual([]);
+	});
+
+	test("returns empty array for empty accounts array", () => {
+		writeFileSync(testFilePath, JSON.stringify({ accounts: [] }));
+		expect(loadFactoryAccountsFromFile(testFilePath)).toEqual([]);
+	});
+
+	test("filters out invalid accounts", () => {
+		const data = {
+			accounts: [
+				{ label: "valid", accountId: "sub_1" },
+				{ label: "no-id" },
+				{ accountId: "no-label" },
+			],
+		};
+		writeFileSync(testFilePath, JSON.stringify(data));
+		const result = loadFactoryAccountsFromFile(testFilePath);
+		expect(result.length).toBe(1);
+		expect(result[0].label).toBe("valid");
+	});
+
+	test("preserves extra fields from accounts", () => {
+		const data = {
+			accounts: [
+				{ label: "work", accountId: "sub_1", email: "a@b.com", apiKey: "fk-test" },
+			],
+		};
+		writeFileSync(testFilePath, JSON.stringify(data));
+		const result = loadFactoryAccountsFromFile(testFilePath);
+		expect(result[0].email).toBe("a@b.com");
+		expect(result[0].apiKey).toBe("fk-test");
+	});
+});
+
+describe("loadFactoryAccountFromAuthV2", () => {
+	const testDir = join(tmpdir(), `factory-authv2-test-${Date.now()}`);
+	const authFilePath = join(testDir, "auth.v2.file");
+	const keyFilePath = join(testDir, "auth.v2.key");
+
+	beforeEach(() => {
+		mkdirSync(testDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	test("returns empty array when auth files do not exist", () => {
+		const result = loadFactoryAccountFromAuthV2(
+			join(testDir, "nonexistent.file"),
+			join(testDir, "nonexistent.key"),
+		);
+		expect(result).toEqual([]);
+	});
+
+	test("returns single-element array for valid auth.v2 files", () => {
+		const jwt = createMockFactoryJWT("user_01ABC", "dev@company.com", {
+			org_id: "org_01XYZ",
+			first_name: "Jane",
+			last_name: "Doe",
+		});
+		const data = { access_token: jwt, refresh_token: "refresh-abc" };
+		const key = generateAuthKey();
+		const encrypted = encryptAuthV2(data, key);
+		writeFileSync(authFilePath, encrypted.encrypted);
+		writeFileSync(keyFilePath, key + "\n");
+
+		const result = loadFactoryAccountFromAuthV2(authFilePath, keyFilePath);
+		expect(result.length).toBe(1);
+		expect(result[0].label).toBe("factory");
+		expect(result[0].accountId).toBe("user_01ABC");
+		expect(result[0].email).toBe("dev@company.com");
+		expect(result[0].org).toBe("org_01XYZ");
+		expect(result[0].name).toBe("Jane Doe");
+		expect(result[0].accessToken).toBe(jwt);
+		expect(result[0].refreshToken).toBe("refresh-abc");
+		expect(result[0].source).toBe(authFilePath);
+	});
+
+	test("returns empty array for corrupt auth file", () => {
+		writeFileSync(authFilePath, "corrupt:data:here");
+		writeFileSync(keyFilePath, generateAuthKey() + "\n");
+		const result = loadFactoryAccountFromAuthV2(authFilePath, keyFilePath);
+		expect(result).toEqual([]);
+	});
+
+	test("returns empty array for JWT without sub claim", () => {
+		// Create a JWT without the sub claim
+		const header = { alg: "RS256", typ: "JWT" };
+		const payload = { email: "no-sub@test.com" }; // no sub
+		const headerB64 = Buffer.from(JSON.stringify(header)).toString("base64");
+		const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64");
+		const jwt = `${headerB64}.${payloadB64}.sig`;
+
+		const data = { access_token: jwt, refresh_token: "ref" };
+		const key = generateAuthKey();
+		const encrypted = encryptAuthV2(data, key);
+		writeFileSync(authFilePath, encrypted.encrypted);
+		writeFileSync(keyFilePath, key + "\n");
+
+		const result = loadFactoryAccountFromAuthV2(authFilePath, keyFilePath);
+		expect(result).toEqual([]);
+	});
+
+	test("returns empty array when decrypted content has no access_token", () => {
+		const data = { refresh_token: "ref-only" }; // no access_token
+		const key = generateAuthKey();
+		const encrypted = encryptAuthV2(data, key);
+		writeFileSync(authFilePath, encrypted.encrypted);
+		writeFileSync(keyFilePath, key + "\n");
+
+		const result = loadFactoryAccountFromAuthV2(authFilePath, keyFilePath);
+		expect(result).toEqual([]);
+	});
+});
+
+describe("loadAllFactoryAccounts", () => {
+	let originalEnv;
+	const testDir = join(tmpdir(), `factory-all-accounts-test-${Date.now()}`);
+
+	beforeEach(() => {
+		originalEnv = process.env.FACTORY_ACCOUNTS;
+		mkdirSync(testDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		if (originalEnv === undefined) {
+			delete process.env.FACTORY_ACCOUNTS;
+		} else {
+			process.env.FACTORY_ACCOUNTS = originalEnv;
+		}
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	test("returns empty array when no sources have accounts", () => {
+		delete process.env.FACTORY_ACCOUNTS;
+		// loadAllFactoryAccounts reads from default paths which don't exist in test
+		// so we just verify the function runs without error and returns array
+		const result = loadAllFactoryAccounts();
+		expect(Array.isArray(result)).toBe(true);
+	});
+
+	test("loads accounts from env var", () => {
+		const accounts = [
+			{ label: "env-work", accountId: "sub_env1" },
+		];
+		process.env.FACTORY_ACCOUNTS = JSON.stringify(accounts);
+		const result = loadAllFactoryAccounts();
+		expect(result.some(a => a.label === "env-work")).toBe(true);
+	});
+
+	test("deduplicates by accountId (keeps first occurrence)", () => {
+		const accounts = [
+			{ label: "first", accountId: "sub_dup" },
+			{ label: "second", accountId: "sub_dup" },
+			{ label: "third", accountId: "sub_unique" },
+		];
+		process.env.FACTORY_ACCOUNTS = JSON.stringify(accounts);
+		const result = loadAllFactoryAccounts();
+		const dupAccounts = result.filter(a => a.accountId === "sub_dup");
+		expect(dupAccounts.length).toBe(1);
+		expect(dupAccounts[0].label).toBe("first");
+		expect(result.some(a => a.label === "third")).toBe(true);
+	});
+
+	test("env accounts take priority (first source)", () => {
+		const envAccounts = [
+			{ label: "env-acct", accountId: "sub_priority" },
+		];
+		process.env.FACTORY_ACCOUNTS = JSON.stringify(envAccounts);
+		const result = loadAllFactoryAccounts();
+		const match = result.find(a => a.accountId === "sub_priority");
+		expect(match).toBeDefined();
+		expect(match.source).toBe("env");
+	});
+});
+
+describe("getFactoryActiveLabel", () => {
+	const testDir = join(tmpdir(), `factory-active-label-test-${Date.now()}`);
+	const testFilePath = join(testDir, "factory-accounts.json");
+
+	beforeEach(() => {
+		mkdirSync(testDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	test("returns null for non-existent file", () => {
+		expect(getFactoryActiveLabel(join(testDir, "missing.json"))).toBeNull();
+	});
+
+	test("returns activeLabel from container", () => {
+		const data = {
+			schemaVersion: 1,
+			activeLabel: "my-work",
+			accounts: [{ label: "my-work", accountId: "sub_1" }],
+		};
+		writeFileSync(testFilePath, JSON.stringify(data));
+		expect(getFactoryActiveLabel(testFilePath)).toBe("my-work");
+	});
+
+	test("returns null when activeLabel is not set", () => {
+		const data = {
+			schemaVersion: 1,
+			accounts: [{ label: "work", accountId: "sub_1" }],
+		};
+		writeFileSync(testFilePath, JSON.stringify(data));
+		expect(getFactoryActiveLabel(testFilePath)).toBeNull();
+	});
+
+	test("returns null for invalid JSON", () => {
+		writeFileSync(testFilePath, "not valid json");
+		expect(getFactoryActiveLabel(testFilePath)).toBeNull();
+	});
+});
+
+describe("findFactoryAccountByLabel", () => {
+	const accounts = [
+		{ label: "work", accountId: "sub_1", email: "a@b.com" },
+		{ label: "personal", accountId: "sub_2", email: "c@d.com" },
+	];
+
+	test("finds account by label", () => {
+		const result = findFactoryAccountByLabel(accounts, "work");
+		expect(result).toBeDefined();
+		expect(result.accountId).toBe("sub_1");
+	});
+
+	test("returns null for non-existent label", () => {
+		expect(findFactoryAccountByLabel(accounts, "nonexistent")).toBeNull();
+	});
+
+	test("returns null for null label", () => {
+		expect(findFactoryAccountByLabel(accounts, null)).toBeNull();
+	});
+
+	test("returns null for empty label", () => {
+		expect(findFactoryAccountByLabel(accounts, "")).toBeNull();
+	});
+
+	test("returns null for null accounts array", () => {
+		expect(findFactoryAccountByLabel(null, "work")).toBeNull();
+	});
+
+	test("returns null for non-array accounts", () => {
+		expect(findFactoryAccountByLabel("not-array", "work")).toBeNull();
+	});
+});
+
+describe("getAllFactoryLabels", () => {
+	test("returns all unique labels", () => {
+		const accounts = [
+			{ label: "work", accountId: "sub_1" },
+			{ label: "personal", accountId: "sub_2" },
+			{ label: "work", accountId: "sub_3" }, // duplicate label
+		];
+		const labels = getAllFactoryLabels(accounts);
+		expect(labels).toEqual(["work", "personal"]);
+	});
+
+	test("returns empty array for empty accounts", () => {
+		expect(getAllFactoryLabels([])).toEqual([]);
+	});
+
+	test("returns empty array for null input", () => {
+		expect(getAllFactoryLabels(null)).toEqual([]);
+	});
+
+	test("returns empty array for non-array input", () => {
+		expect(getAllFactoryLabels("not-array")).toEqual([]);
+	});
+
+	test("filters out accounts without labels", () => {
+		const accounts = [
+			{ label: "work", accountId: "sub_1" },
+			{ accountId: "sub_2" }, // no label
+			{ label: "", accountId: "sub_3" }, // empty label
+		];
+		const labels = getAllFactoryLabels(accounts);
+		expect(labels).toEqual(["work"]);
 	});
 });
 

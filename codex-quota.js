@@ -280,3 +280,16 @@ export {
 	readAuthV2Files,
 	writeAuthV2Files,
 } from "./lib/factory-crypto.js";
+
+// Factory account utilities (for testing)
+export {
+	isValidFactoryAccount,
+	loadFactoryAccountsFromEnv,
+	loadFactoryAccountsFromFile,
+	extractFactoryProfile,
+	loadFactoryAccountFromAuthV2,
+	loadAllFactoryAccounts,
+	getFactoryActiveLabel,
+	findFactoryAccountByLabel,
+	getAllFactoryLabels,
+} from "./lib/factory-accounts.js";
