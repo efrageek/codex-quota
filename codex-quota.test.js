@@ -131,6 +131,7 @@ import {
 	// Factory handlers
 	handleFactory,
 	handleFactoryAdd,
+	handleFactorySwitch,
 	handleFactoryQuota,
 	handleQuota,
 } from "./codex-quota.js";
@@ -7321,5 +7322,336 @@ describe("handleFactoryAdd", () => {
 		expect(existsSync(testContainerPath)).toBe(true);
 		const container = JSON.parse(readFileSync(testContainerPath, "utf-8"));
 		expect(container.accounts[0].label).toBe("routed");
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handleFactorySwitch tests (VAL-ACCT-004, VAL-ACCT-005)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("handleFactorySwitch", () => {
+	const testDir = join(tmpdir(), `factory-switch-test-${Date.now()}`);
+	const testFactoryDir = join(testDir, "factory-home");
+	const testAuthFile = join(testFactoryDir, "auth.v2.file");
+	const testKeyFile = join(testFactoryDir, "auth.v2.key");
+	const testContainerPath = join(testDir, "factory-accounts.json");
+
+	let originalConsoleLog;
+	let originalConsoleError;
+	let consoleOutput;
+	let consoleErrors;
+	let originalProcessExit;
+	let exitCode;
+
+	// Helper to create encrypted auth files and a container with accounts
+	function createTestContainer(accounts, activeLabel = null) {
+		const container = {
+			schemaVersion: 1,
+			activeLabel,
+			accounts,
+		};
+		mkdirSync(testDir, { recursive: true });
+		writeFileSync(testContainerPath, JSON.stringify(container, null, 2) + "\n", { mode: 0o600 });
+	}
+
+	// Helper to build an account entry with encrypted auth data
+	function buildAccountEntry(label, sub, email, opts = {}) {
+		const jwt = createMockFactoryJWT(sub, email, opts);
+		const data = { access_token: jwt, refresh_token: `refresh-${label}` };
+		const key = generateAuthKey();
+		const encrypted = encryptAuthV2(data, key);
+		return {
+			label,
+			accountId: sub,
+			email,
+			org: opts.org_id ?? null,
+			name: [opts.first_name, opts.last_name].filter(Boolean).join(" ") || null,
+			authFile: encrypted.encrypted,
+			authKey: key,
+			source: testContainerPath,
+		};
+	}
+
+	beforeEach(() => {
+		mkdirSync(testDir, { recursive: true });
+
+		originalConsoleLog = console.log;
+		originalConsoleError = console.error;
+		consoleOutput = [];
+		consoleErrors = [];
+		console.log = (...args) => { consoleOutput.push(args.join(" ")); };
+		console.error = (...args) => { consoleErrors.push(args.join(" ")); };
+
+		originalProcessExit = process.exit;
+		exitCode = null;
+		process.exit = (code) => { exitCode = code; throw new Error(`EXIT_${code}`); };
+	});
+
+	afterEach(() => {
+		console.log = originalConsoleLog;
+		console.error = originalConsoleError;
+		process.exit = originalProcessExit;
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	test("happy path: switches account, writes auth files, updates activeLabel", async () => {
+		const acctA = buildAccountEntry("work", "user_A", "work@co.com", { org_id: "org_A" });
+		const acctB = buildAccountEntry("personal", "user_B", "me@home.com", { org_id: "org_B" });
+		createTestContainer([acctA, acctB], "work");
+
+		await handleFactorySwitch(["personal"], {
+			_containerPath: testContainerPath,
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+		});
+
+		// Verify auth files were written
+		expect(existsSync(testAuthFile)).toBe(true);
+		expect(existsSync(testKeyFile)).toBe(true);
+
+		// Verify auth files contain the correct account's data
+		const tokens = readAuthV2Files(testAuthFile, testKeyFile);
+		expect(tokens).not.toBeNull();
+		expect(tokens.refreshToken).toBe("refresh-personal");
+
+		// Verify activeLabel updated in container
+		const container = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		expect(container.activeLabel).toBe("personal");
+
+		// Verify success output
+		const output = consoleOutput.join("\n");
+		expect(output).toContain("personal");
+		expect(output).toContain("Switched");
+	});
+
+	test("happy path: JSON output contains success fields", async () => {
+		const acct = buildAccountEntry("dev", "user_D", "dev@test.com", { org_id: "org_D" });
+		createTestContainer([acct], "dev");
+
+		await handleFactorySwitch(["dev"], {
+			json: true,
+			_containerPath: testContainerPath,
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+		});
+
+		const output = consoleOutput.join("\n");
+		const parsed = JSON.parse(output);
+		expect(parsed.success).toBe(true);
+		expect(parsed.label).toBe("dev");
+		expect(parsed.email).toBe("dev@test.com");
+		expect(parsed.org).toBe("org_D");
+		expect(parsed.accountId).toBe("user_D");
+	});
+
+	test("non-existent label → error with available labels", async () => {
+		const acctA = buildAccountEntry("work", "user_A", "a@b.com");
+		const acctB = buildAccountEntry("personal", "user_B", "c@d.com");
+		createTestContainer([acctA, acctB], "work");
+
+		try {
+			await handleFactorySwitch(["nonexistent"], {
+				_containerPath: testContainerPath,
+				_authFilePath: testAuthFile,
+				_keyFilePath: testKeyFile,
+			});
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+
+		expect(exitCode).toBe(1);
+		const allOutput = [...consoleOutput, ...consoleErrors].join("\n");
+		expect(allOutput).toContain("nonexistent");
+		expect(allOutput).toContain("work");
+		expect(allOutput).toContain("personal");
+	});
+
+	test("non-existent label → JSON error with available labels", async () => {
+		const acctA = buildAccountEntry("alpha", "user_1", "a@b.com");
+		createTestContainer([acctA], "alpha");
+
+		try {
+			await handleFactorySwitch(["missing"], {
+				json: true,
+				_containerPath: testContainerPath,
+				_authFilePath: testAuthFile,
+				_keyFilePath: testKeyFile,
+			});
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+
+		expect(exitCode).toBe(1);
+		const output = consoleOutput.join("\n");
+		const parsed = JSON.parse(output);
+		expect(parsed.success).toBe(false);
+		expect(parsed.error).toContain("missing");
+		expect(parsed.availableLabels).toEqual(["alpha"]);
+	});
+
+	test("missing label argument → usage message", async () => {
+		const acct = buildAccountEntry("work", "user_X", "x@y.com");
+		createTestContainer([acct], "work");
+
+		try {
+			await handleFactorySwitch([], {
+				_containerPath: testContainerPath,
+				_authFilePath: testAuthFile,
+				_keyFilePath: testKeyFile,
+			});
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+
+		expect(exitCode).toBe(1);
+		const allOutput = [...consoleOutput, ...consoleErrors].join("\n");
+		expect(allOutput).toContain("Usage");
+		expect(allOutput).toContain("factory switch");
+	});
+
+	test("missing label argument → JSON error", async () => {
+		try {
+			await handleFactorySwitch([], {
+				json: true,
+				_containerPath: testContainerPath,
+				_authFilePath: testAuthFile,
+				_keyFilePath: testKeyFile,
+			});
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+
+		expect(exitCode).toBe(1);
+		const output = consoleOutput.join("\n");
+		const parsed = JSON.parse(output);
+		expect(parsed.success).toBe(false);
+		expect(parsed.error).toContain("Missing");
+	});
+
+	test("overwrite verification: switch A→B→A roundtrip", async () => {
+		const acctA = buildAccountEntry("alpha", "user_A", "a@test.com");
+		const acctB = buildAccountEntry("beta", "user_B", "b@test.com");
+		createTestContainer([acctA, acctB], "alpha");
+
+		// Switch to beta
+		await handleFactorySwitch(["beta"], {
+			_containerPath: testContainerPath,
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+		});
+
+		let tokens = readAuthV2Files(testAuthFile, testKeyFile);
+		expect(tokens.refreshToken).toBe("refresh-beta");
+		let container = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		expect(container.activeLabel).toBe("beta");
+
+		// Switch back to alpha (overwrites, not appends)
+		consoleOutput = [];
+		consoleErrors = [];
+		await handleFactorySwitch(["alpha"], {
+			_containerPath: testContainerPath,
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+		});
+
+		tokens = readAuthV2Files(testAuthFile, testKeyFile);
+		expect(tokens.refreshToken).toBe("refresh-alpha");
+		container = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		expect(container.activeLabel).toBe("alpha");
+	});
+
+	test("file permissions: auth files 0o600, directory 0o700", async () => {
+		const acct = buildAccountEntry("permtest", "user_P", "p@test.com");
+		createTestContainer([acct], null);
+
+		// Remove factory dir so it gets created
+		rmSync(testFactoryDir, { recursive: true, force: true });
+
+		await handleFactorySwitch(["permtest"], {
+			_containerPath: testContainerPath,
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+		});
+
+		// Verify auth file permissions
+		const authStats = statSync(testAuthFile);
+		expect(authStats.mode & 0o777).toBe(0o600);
+
+		const keyStats = statSync(testKeyFile);
+		expect(keyStats.mode & 0o777).toBe(0o600);
+
+		// Verify directory permissions
+		const dirStats = statSync(testFactoryDir);
+		expect(dirStats.mode & 0o777).toBe(0o700);
+	});
+
+	test("container file permissions 0o600 after switch", async () => {
+		const acct = buildAccountEntry("cperm", "user_CP", "cp@test.com");
+		createTestContainer([acct], null);
+
+		await handleFactorySwitch(["cperm"], {
+			_containerPath: testContainerPath,
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+		});
+
+		const stats = statSync(testContainerPath);
+		expect(stats.mode & 0o777).toBe(0o600);
+	});
+
+	test("no container file → error", async () => {
+		try {
+			await handleFactorySwitch(["work"], {
+				_containerPath: join(testDir, "nonexistent.json"),
+				_authFilePath: testAuthFile,
+				_keyFilePath: testKeyFile,
+			});
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+
+		expect(exitCode).toBe(1);
+		const allOutput = [...consoleOutput, ...consoleErrors].join("\n");
+		expect(allOutput).toContain("No Factory accounts");
+	});
+
+	test("account without authFile/authKey → error", async () => {
+		// Account missing auth data
+		const container = {
+			schemaVersion: 1,
+			activeLabel: "noauth",
+			accounts: [{ label: "noauth", accountId: "user_NA", email: "na@test.com" }],
+		};
+		mkdirSync(testDir, { recursive: true });
+		writeFileSync(testContainerPath, JSON.stringify(container, null, 2) + "\n");
+
+		try {
+			await handleFactorySwitch(["noauth"], {
+				_containerPath: testContainerPath,
+				_authFilePath: testAuthFile,
+				_keyFilePath: testKeyFile,
+			});
+		} catch (e) {
+			if (!e.message.startsWith("EXIT_")) throw e;
+		}
+
+		expect(exitCode).toBe(1);
+		const allOutput = [...consoleOutput, ...consoleErrors].join("\n");
+		expect(allOutput).toContain("no stored auth data");
+	});
+
+	test("handleFactory routes 'switch' to handleFactorySwitch", async () => {
+		const acct = buildAccountEntry("routed", "user_R", "r@test.com");
+		createTestContainer([acct], null);
+
+		await handleFactory(["switch", "routed"], {
+			_containerPath: testContainerPath,
+			_authFilePath: testAuthFile,
+			_keyFilePath: testKeyFile,
+		});
+
+		expect(existsSync(testAuthFile)).toBe(true);
+		const container = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		expect(container.activeLabel).toBe("routed");
 	});
 });
