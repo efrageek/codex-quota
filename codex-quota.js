@@ -259,3 +259,15 @@ export { supportsColor, colorize, setNoColorFlag } from "./lib/color.js";
 
 // Constants (for testing)
 export { MULTI_ACCOUNT_PATHS, CODEX_CLI_AUTH_PATH, PRIMARY_CMD, CLAUDE_MULTI_ACCOUNT_PATHS } from "./lib/constants.js";
+
+// Factory constants (for testing)
+export {
+	FACTORY_API_BASE,
+	FACTORY_USAGE_URL,
+	FACTORY_TIMEOUT_MS,
+	FACTORY_MULTI_ACCOUNT_PATH,
+	FACTORY_AUTH_FILE_PATH,
+	FACTORY_AUTH_KEY_PATH,
+	FACTORY_OAUTH_REFRESH_BUFFER_MS,
+	FACTORY_PLAN_TIERS,
+} from "./lib/constants.js";

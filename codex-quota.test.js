@@ -84,6 +84,15 @@ import {
 	CODEX_CLI_AUTH_PATH,
 	PRIMARY_CMD,
 	CLAUDE_MULTI_ACCOUNT_PATHS,
+	// Factory constants
+	FACTORY_API_BASE,
+	FACTORY_USAGE_URL,
+	FACTORY_TIMEOUT_MS,
+	FACTORY_MULTI_ACCOUNT_PATH,
+	FACTORY_AUTH_FILE_PATH,
+	FACTORY_AUTH_KEY_PATH,
+	FACTORY_OAUTH_REFRESH_BUFFER_MS,
+	FACTORY_PLAN_TIERS,
 	printHelp,
 	printHelpAdd,
 	printHelpCodexSync,
@@ -169,6 +178,64 @@ const MOCK_REFRESH_TOKEN = "refresh_token_123";
 describe("PRIMARY_CMD constant", () => {
 	test("equals 'codex-quota'", () => {
 		expect(PRIMARY_CMD).toBe("codex-quota");
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Factory constants tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("Factory constants", () => {
+	test("FACTORY_API_BASE is the Factory API URL", () => {
+		expect(FACTORY_API_BASE).toBe("https://api.factory.ai");
+	});
+
+	test("FACTORY_USAGE_URL points to analytics/tokens endpoint", () => {
+		expect(FACTORY_USAGE_URL).toBe("https://api.factory.ai/api/v1/analytics/tokens");
+		expect(FACTORY_USAGE_URL.startsWith(FACTORY_API_BASE)).toBe(true);
+	});
+
+	test("FACTORY_TIMEOUT_MS is 15000", () => {
+		expect(FACTORY_TIMEOUT_MS).toBe(15000);
+		expect(typeof FACTORY_TIMEOUT_MS).toBe("number");
+	});
+
+	test("FACTORY_MULTI_ACCOUNT_PATH resolves to ~/.factory-accounts.json", () => {
+		expect(FACTORY_MULTI_ACCOUNT_PATH).toBe(join(homedir(), ".factory-accounts.json"));
+		expect(typeof FACTORY_MULTI_ACCOUNT_PATH).toBe("string");
+	});
+
+	test("FACTORY_AUTH_FILE_PATH resolves to ~/.factory/auth.v2.file", () => {
+		expect(FACTORY_AUTH_FILE_PATH).toBe(join(homedir(), ".factory", "auth.v2.file"));
+	});
+
+	test("FACTORY_AUTH_KEY_PATH resolves to ~/.factory/auth.v2.key", () => {
+		expect(FACTORY_AUTH_KEY_PATH).toBe(join(homedir(), ".factory", "auth.v2.key"));
+	});
+
+	test("FACTORY_OAUTH_REFRESH_BUFFER_MS is 60000", () => {
+		expect(FACTORY_OAUTH_REFRESH_BUFFER_MS).toBe(60000);
+		expect(typeof FACTORY_OAUTH_REFRESH_BUFFER_MS).toBe("number");
+	});
+
+	test("FACTORY_PLAN_TIERS has pro and max tiers with correct values", () => {
+		expect(typeof FACTORY_PLAN_TIERS).toBe("object");
+		expect(FACTORY_PLAN_TIERS).not.toBeNull();
+		expect(FACTORY_PLAN_TIERS.pro).toBe(20_000_000);
+		expect(FACTORY_PLAN_TIERS.max).toBe(200_000_000);
+	});
+
+	test("FACTORY_PLAN_TIERS has exactly pro and max keys", () => {
+		const keys = Object.keys(FACTORY_PLAN_TIERS);
+		expect(keys).toContain("pro");
+		expect(keys).toContain("max");
+		expect(keys.length).toBe(2);
+	});
+
+	test("all Factory path constants are absolute paths", () => {
+		expect(FACTORY_MULTI_ACCOUNT_PATH.startsWith("/")).toBe(true);
+		expect(FACTORY_AUTH_FILE_PATH.startsWith("/")).toBe(true);
+		expect(FACTORY_AUTH_KEY_PATH.startsWith("/")).toBe(true);
 	});
 });
 
