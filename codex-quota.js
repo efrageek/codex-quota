@@ -343,3 +343,14 @@ export {
 	extractModelBreakdown,
 	fetchFactoryUsage,
 } from "./lib/factory-usage.js";
+
+// Factory token refresh (for testing)
+export {
+	isFactoryTokenExpiring,
+	refreshFactoryToken,
+	persistFactoryTokens,
+	ensureFreshFactoryToken,
+} from "./lib/factory-tokens.js";
+
+// Token match field maps (for testing)
+export { FACTORY_TOKEN_FIELDS } from "./lib/token-match.js";

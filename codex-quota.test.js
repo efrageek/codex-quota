@@ -136,6 +136,13 @@ import {
 	handleFactoryList,
 	handleFactoryQuota,
 	handleQuota,
+	// Factory token refresh
+	isFactoryTokenExpiring,
+	refreshFactoryToken,
+	persistFactoryTokens,
+	ensureFreshFactoryToken,
+	// Token match field maps
+	FACTORY_TOKEN_FIELDS,
 } from "./codex-quota.js";
 
 // Ensure pi auth writes never touch the real home directory during tests
@@ -8312,5 +8319,680 @@ describe("handleFactoryList", () => {
 		expect(parsed.activeLabel).toBeNull();
 		expect(parsed.accounts.length).toBe(1);
 		expect(parsed.accounts[0].isActive).toBe(false);
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Factory Token Refresh Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("FACTORY_TOKEN_FIELDS", () => {
+	test("has access field mapping with accessToken and access_token", () => {
+		expect(FACTORY_TOKEN_FIELDS.access).toEqual(["accessToken", "access_token"]);
+	});
+
+	test("has refresh field mapping with refreshToken and refresh_token", () => {
+		expect(FACTORY_TOKEN_FIELDS.refresh).toEqual(["refreshToken", "refresh_token"]);
+	});
+
+	test("has expires field mapping", () => {
+		expect(FACTORY_TOKEN_FIELDS.expires).toEqual(["expiresAt", "expires_at", "expires"]);
+	});
+
+	test("has accountId field mapping", () => {
+		expect(FACTORY_TOKEN_FIELDS.accountId).toEqual(["accountId", "account_id"]);
+	});
+});
+
+describe("isFactoryTokenExpiring", () => {
+	test("returns true for null accessToken with no expiresAt", () => {
+		expect(isFactoryTokenExpiring(null)).toBe(true);
+	});
+
+	test("returns true for expired expiresAt timestamp", () => {
+		const expired = Date.now() - 10000;
+		expect(isFactoryTokenExpiring(null, expired)).toBe(true);
+	});
+
+	test("returns false for expiresAt far in the future", () => {
+		const future = Date.now() + 3600 * 1000; // 1 hour from now
+		// expiresAt takes precedence, so even with null token, future expiresAt = not expiring
+		expect(isFactoryTokenExpiring(null, future)).toBe(false);
+		// With actual token and future expiresAt:
+		expect(isFactoryTokenExpiring("some-token", future)).toBe(false);
+	});
+
+	test("returns true when expiresAt is within buffer window", () => {
+		// Buffer is 60 seconds; set expiresAt to 30 seconds from now
+		const withinBuffer = Date.now() + 30 * 1000;
+		expect(isFactoryTokenExpiring("some-token", withinBuffer)).toBe(true);
+	});
+
+	test("returns false when expiresAt is beyond buffer window", () => {
+		// Buffer is 60 seconds; set expiresAt to 120 seconds from now
+		const beyondBuffer = Date.now() + 120 * 1000;
+		expect(isFactoryTokenExpiring("some-token", beyondBuffer)).toBe(false);
+	});
+
+	test("falls back to JWT exp claim when no expiresAt provided", () => {
+		// Create a JWT with exp in the far future
+		const futureExp = Math.floor(Date.now() / 1000) + 7200; // 2 hours
+		const jwt = createMockFactoryJWT("user_123", "dev@test.com", { exp: futureExp });
+		expect(isFactoryTokenExpiring(jwt)).toBe(false);
+	});
+
+	test("returns true when JWT exp claim is in the past", () => {
+		const pastExp = Math.floor(Date.now() / 1000) - 3600; // 1 hour ago
+		const jwt = createMockFactoryJWT("user_123", "dev@test.com", { exp: pastExp });
+		expect(isFactoryTokenExpiring(jwt)).toBe(true);
+	});
+
+	test("returns true when JWT exp claim is within buffer", () => {
+		const nearExp = Math.floor(Date.now() / 1000) + 30; // 30 seconds
+		const jwt = createMockFactoryJWT("user_123", "dev@test.com", { exp: nearExp });
+		expect(isFactoryTokenExpiring(jwt)).toBe(true);
+	});
+
+	test("returns true for invalid JWT (no exp claim)", () => {
+		expect(isFactoryTokenExpiring("not.a.valid.jwt")).toBe(true);
+	});
+
+	test("expiresAt takes precedence over JWT exp claim", () => {
+		// JWT says expired, but expiresAt says not
+		const pastExp = Math.floor(Date.now() / 1000) - 3600;
+		const jwt = createMockFactoryJWT("user_123", "dev@test.com", { exp: pastExp });
+		const futureExpiresAt = Date.now() + 3600 * 1000;
+		expect(isFactoryTokenExpiring(jwt, futureExpiresAt)).toBe(false);
+	});
+});
+
+describe("refreshFactoryToken", () => {
+	let originalFetch;
+
+	beforeEach(() => {
+		originalFetch = globalThis.fetch;
+	});
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+	});
+
+	test("returns new tokens on successful refresh", async () => {
+		const newJwt = createMockFactoryJWT("user_new", "new@test.com");
+		globalThis.fetch = async (url, options) => {
+			expect(url).toBe("https://api.factory.ai/api/v1/auth/refresh");
+			const body = JSON.parse(options.body);
+			expect(body.grant_type).toBe("refresh_token");
+			expect(body.refresh_token).toBe("old-refresh-token");
+			return new Response(JSON.stringify({
+				access_token: newJwt,
+				refresh_token: "new-refresh-token",
+				expires_in: 3600,
+			}), { status: 200, headers: { "Content-Type": "application/json" } });
+		};
+
+		const result = await refreshFactoryToken("old-refresh-token");
+		expect(result.access_token).toBe(newJwt);
+		expect(result.refresh_token).toBe("new-refresh-token");
+		expect(result.expires_in).toBe(3600);
+		expect(result.error).toBeUndefined();
+	});
+
+	test("returns error for HTTP 404", async () => {
+		globalThis.fetch = async () => {
+			return new Response(JSON.stringify({ detail: "Not found" }), { status: 404 });
+		};
+
+		const result = await refreshFactoryToken("some-token");
+		expect(result.error).toContain("Token refresh failed");
+		expect(result.error).toContain("404");
+	});
+
+	test("returns error for HTTP 401", async () => {
+		globalThis.fetch = async () => {
+			return new Response(JSON.stringify({ message: "Unauthorized" }), { status: 401 });
+		};
+
+		const result = await refreshFactoryToken("some-token");
+		expect(result.error).toContain("Token refresh failed");
+		expect(result.error).toContain("401");
+	});
+
+	test("returns error for null refresh token", async () => {
+		const result = await refreshFactoryToken(null);
+		expect(result.error).toBe("No refresh token available");
+	});
+
+	test("returns error for network failure", async () => {
+		globalThis.fetch = async () => {
+			throw new Error("Network error");
+		};
+
+		const result = await refreshFactoryToken("some-token");
+		expect(result.error).toBe("Network error");
+	});
+
+	test("returns error for invalid JSON response", async () => {
+		globalThis.fetch = async () => {
+			return new Response("not json", { status: 200, headers: { "Content-Type": "text/plain" } });
+		};
+
+		const result = await refreshFactoryToken("some-token");
+		expect(result.error).toContain("invalid JSON");
+	});
+
+	test("returns error for response missing access_token", async () => {
+		globalThis.fetch = async () => {
+			return new Response(JSON.stringify({ refresh_token: "new" }), {
+				status: 200, headers: { "Content-Type": "application/json" },
+			});
+		};
+
+		const result = await refreshFactoryToken("some-token");
+		expect(result.error).toContain("missing access_token");
+	});
+
+	test("defaults refresh_token to input when response omits it", async () => {
+		globalThis.fetch = async () => {
+			return new Response(JSON.stringify({
+				access_token: "new-access",
+			}), { status: 200, headers: { "Content-Type": "application/json" } });
+		};
+
+		const result = await refreshFactoryToken("original-refresh");
+		expect(result.access_token).toBe("new-access");
+		expect(result.refresh_token).toBe("original-refresh");
+		expect(result.expires_in).toBe(3600); // default
+	});
+});
+
+describe("persistFactoryTokens", () => {
+	const testDir = join(tmpdir(), "codex-quota-factory-persist-" + Date.now());
+	const testContainerPath = join(testDir, "factory-accounts.json");
+	const testAuthFile = join(testDir, "factory", "auth.v2.file");
+	const testKeyFile = join(testDir, "factory", "auth.v2.key");
+
+	beforeEach(() => {
+		mkdirSync(join(testDir, "factory"), { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	test("updates matching account in container by label", () => {
+		const oldJwt = createMockFactoryJWT("user_A", "old@test.com");
+		const newJwt = createMockFactoryJWT("user_A", "new@test.com");
+		const container = {
+			schemaVersion: 1,
+			activeLabel: "work",
+			accounts: [
+				{
+					label: "work",
+					accountId: "user_A",
+					accessToken: oldJwt,
+					refreshToken: "old-refresh",
+					email: "old@test.com",
+				},
+				{
+					label: "personal",
+					accountId: "user_B",
+					accessToken: "other-jwt",
+					refreshToken: "other-refresh",
+				},
+			],
+		};
+		writeFileSync(testContainerPath, JSON.stringify(container, null, 2) + "\n");
+
+		const result = persistFactoryTokens({
+			label: "work",
+			accessToken: newJwt,
+			refreshToken: "new-refresh",
+			expiresAt: Date.now() + 3600 * 1000,
+			accountId: "user_A",
+			source: testContainerPath,
+		}, [], { containerPath: testContainerPath, authFilePath: testAuthFile, keyFilePath: testKeyFile });
+
+		expect(result.updatedPaths).toContain(testContainerPath);
+		expect(result.errors).toHaveLength(0);
+
+		// Verify the container file was updated
+		const updated = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		expect(updated.accounts[0].accessToken).toBe(newJwt);
+		expect(updated.accounts[0].refreshToken).toBe("new-refresh");
+		// Second account should be unchanged
+		expect(updated.accounts[1].accessToken).toBe("other-jwt");
+		expect(updated.accounts[1].refreshToken).toBe("other-refresh");
+	});
+
+	test("writes auth.v2 files when account is active", () => {
+		const newJwt = createMockFactoryJWT("user_A", "work@test.com");
+		const container = {
+			schemaVersion: 1,
+			activeLabel: "work",
+			accounts: [
+				{
+					label: "work",
+					accountId: "user_A",
+					accessToken: "old-jwt",
+					refreshToken: "old-refresh",
+				},
+			],
+		};
+		writeFileSync(testContainerPath, JSON.stringify(container, null, 2) + "\n");
+
+		const result = persistFactoryTokens({
+			label: "work",
+			accessToken: newJwt,
+			refreshToken: "new-refresh",
+			expiresAt: Date.now() + 3600 * 1000,
+			accountId: "user_A",
+			source: testContainerPath,
+		}, [], { containerPath: testContainerPath, authFilePath: testAuthFile, keyFilePath: testKeyFile });
+
+		expect(result.updatedPaths).toContain(testContainerPath);
+		expect(result.updatedPaths).toContain(testAuthFile);
+		expect(result.errors).toHaveLength(0);
+
+		// Verify auth.v2 files were written and can be decrypted
+		const tokens = readAuthV2Files(testAuthFile, testKeyFile);
+		expect(tokens).not.toBeNull();
+		expect(tokens.accessToken).toBe(newJwt);
+		expect(tokens.refreshToken).toBe("new-refresh");
+	});
+
+	test("does not write auth.v2 files when account is not active", () => {
+		const newJwt = createMockFactoryJWT("user_B", "personal@test.com");
+		const container = {
+			schemaVersion: 1,
+			activeLabel: "work",
+			accounts: [
+				{
+					label: "personal",
+					accountId: "user_B",
+					accessToken: "old-jwt",
+					refreshToken: "old-refresh",
+				},
+			],
+		};
+		writeFileSync(testContainerPath, JSON.stringify(container, null, 2) + "\n");
+
+		const result = persistFactoryTokens({
+			label: "personal",
+			accessToken: newJwt,
+			refreshToken: "new-refresh",
+			expiresAt: Date.now() + 3600 * 1000,
+			accountId: "user_B",
+			source: testContainerPath,
+		}, [], { containerPath: testContainerPath, authFilePath: testAuthFile, keyFilePath: testKeyFile });
+
+		expect(result.updatedPaths).toContain(testContainerPath);
+		expect(result.updatedPaths).not.toContain(testAuthFile);
+	});
+
+	test("skips persistence for env-sourced accounts", () => {
+		const container = {
+			schemaVersion: 1,
+			activeLabel: null,
+			accounts: [],
+		};
+		writeFileSync(testContainerPath, JSON.stringify(container, null, 2) + "\n");
+
+		const result = persistFactoryTokens({
+			label: "env-work",
+			accessToken: "jwt",
+			refreshToken: "refresh",
+			accountId: "user_E",
+			source: "env",
+		}, [], { containerPath: testContainerPath, authFilePath: testAuthFile, keyFilePath: testKeyFile });
+
+		expect(result.updatedPaths).toHaveLength(0);
+		expect(result.errors).toHaveLength(0);
+	});
+
+	test("handles missing container file gracefully", () => {
+		const missingPath = join(testDir, "nonexistent-container.json");
+		const result = persistFactoryTokens({
+			label: "work",
+			accessToken: "jwt",
+			refreshToken: "refresh",
+			accountId: "user_X",
+		}, [], { containerPath: missingPath, authFilePath: testAuthFile, keyFilePath: testKeyFile });
+
+		expect(result.updatedPaths).toHaveLength(0);
+		expect(result.errors).toHaveLength(0);
+	});
+
+	test("does not corrupt other accounts on error", () => {
+		const container = {
+			schemaVersion: 1,
+			activeLabel: "work",
+			accounts: [
+				{
+					label: "work",
+					accountId: "user_A",
+					accessToken: "jwt-A",
+					refreshToken: "refresh-A",
+				},
+				{
+					label: "personal",
+					accountId: "user_B",
+					accessToken: "jwt-B",
+					refreshToken: "refresh-B",
+				},
+			],
+		};
+		writeFileSync(testContainerPath, JSON.stringify(container, null, 2) + "\n");
+
+		// Persist tokens for non-matching account (no change expected)
+		const result = persistFactoryTokens({
+			label: "nonexistent",
+			accessToken: "new-jwt",
+			refreshToken: "new-refresh",
+			accountId: "user_C",
+		}, [], { containerPath: testContainerPath, authFilePath: testAuthFile, keyFilePath: testKeyFile });
+
+		// Container should be unchanged (no match by label)
+		const updated = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		expect(updated.accounts[0].accessToken).toBe("jwt-A");
+		expect(updated.accounts[1].accessToken).toBe("jwt-B");
+	});
+});
+
+describe("ensureFreshFactoryToken", () => {
+	const testDir = join(tmpdir(), "codex-quota-factory-refresh-" + Date.now());
+	const testContainerPath = join(testDir, "factory-accounts.json");
+	const testAuthFile = join(testDir, "factory", "auth.v2.file");
+	const testKeyFile = join(testDir, "factory", "auth.v2.key");
+	let originalFetch;
+
+	beforeEach(() => {
+		originalFetch = globalThis.fetch;
+		mkdirSync(join(testDir, "factory"), { recursive: true });
+	});
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	test("non-expired token skips refresh entirely", async () => {
+		let fetchCalled = false;
+		globalThis.fetch = async () => {
+			fetchCalled = true;
+			return new Response("", { status: 500 });
+		};
+
+		const futureExp = Date.now() + 3600 * 1000;
+		const jwt = createMockFactoryJWT("user_A", "test@test.com", {
+			exp: Math.floor(futureExp / 1000),
+		});
+
+		const account = {
+			label: "work",
+			accountId: "user_A",
+			accessToken: jwt,
+			refreshToken: "some-refresh",
+			expiresAt: futureExp,
+		};
+
+		const result = await ensureFreshFactoryToken(account, [account], {
+			containerPath: testContainerPath,
+			authFilePath: testAuthFile,
+			keyFilePath: testKeyFile,
+		});
+
+		expect(result).toBe(true);
+		expect(fetchCalled).toBe(false);
+		// Account should be unchanged
+		expect(account.accessToken).toBe(jwt);
+	});
+
+	test("expired token triggers refresh attempt", async () => {
+		const newJwt = createMockFactoryJWT("user_A", "new@test.com");
+		let refreshCalled = false;
+		globalThis.fetch = async (url) => {
+			if (url.includes("/auth/refresh")) {
+				refreshCalled = true;
+				return new Response(JSON.stringify({
+					access_token: newJwt,
+					refresh_token: "new-refresh",
+					expires_in: 3600,
+				}), { status: 200, headers: { "Content-Type": "application/json" } });
+			}
+			return new Response("Not found", { status: 404 });
+		};
+
+		// Set up container for persistence
+		const container = {
+			schemaVersion: 1,
+			activeLabel: "work",
+			accounts: [{
+				label: "work",
+				accountId: "user_A",
+				accessToken: "old-expired-jwt",
+				refreshToken: "old-refresh",
+			}],
+		};
+		writeFileSync(testContainerPath, JSON.stringify(container, null, 2) + "\n");
+
+		const account = {
+			label: "work",
+			accountId: "user_A",
+			accessToken: "old-expired-jwt",
+			refreshToken: "old-refresh",
+			expiresAt: Date.now() - 10000, // expired
+			source: testContainerPath,
+		};
+
+		const result = await ensureFreshFactoryToken(account, [account], {
+			containerPath: testContainerPath,
+			authFilePath: testAuthFile,
+			keyFilePath: testKeyFile,
+		});
+
+		expect(result).toBe(true);
+		expect(refreshCalled).toBe(true);
+		expect(account.accessToken).toBe(newJwt);
+		expect(account.refreshToken).toBe("new-refresh");
+		expect(account.expiresAt).toBeGreaterThan(Date.now());
+	});
+
+	test("successful refresh persists tokens to container and auth.v2", async () => {
+		const newJwt = createMockFactoryJWT("user_A", "refreshed@test.com");
+		globalThis.fetch = async (url) => {
+			if (url.includes("/auth/refresh")) {
+				return new Response(JSON.stringify({
+					access_token: newJwt,
+					refresh_token: "refreshed-token",
+					expires_in: 7200,
+				}), { status: 200, headers: { "Content-Type": "application/json" } });
+			}
+			return new Response("Not found", { status: 404 });
+		};
+
+		// Set up container with active account
+		const container = {
+			schemaVersion: 1,
+			activeLabel: "work",
+			accounts: [{
+				label: "work",
+				accountId: "user_A",
+				accessToken: "old-jwt",
+				refreshToken: "old-refresh",
+			}],
+		};
+		writeFileSync(testContainerPath, JSON.stringify(container, null, 2) + "\n");
+
+		const account = {
+			label: "work",
+			accountId: "user_A",
+			accessToken: "old-jwt",
+			refreshToken: "old-refresh",
+			expiresAt: Date.now() - 5000,
+			source: testContainerPath,
+		};
+
+		await ensureFreshFactoryToken(account, [account], {
+			containerPath: testContainerPath,
+			authFilePath: testAuthFile,
+			keyFilePath: testKeyFile,
+		});
+
+		// Verify container was updated
+		const updatedContainer = JSON.parse(readFileSync(testContainerPath, "utf-8"));
+		expect(updatedContainer.accounts[0].accessToken).toBe(newJwt);
+		expect(updatedContainer.accounts[0].refreshToken).toBe("refreshed-token");
+
+		// Verify auth.v2 files were written (since this is the active account)
+		const tokens = readAuthV2Files(testAuthFile, testKeyFile);
+		expect(tokens).not.toBeNull();
+		expect(tokens.accessToken).toBe(newJwt);
+		expect(tokens.refreshToken).toBe("refreshed-token");
+	});
+
+	test("refresh failure leaves data unchanged", async () => {
+		globalThis.fetch = async () => {
+			return new Response(JSON.stringify({ detail: "Invalid token" }), { status: 401 });
+		};
+
+		const originalJwt = "original-jwt-unchanged";
+		const originalRefresh = "original-refresh-unchanged";
+		const account = {
+			label: "work",
+			accountId: "user_A",
+			accessToken: originalJwt,
+			refreshToken: originalRefresh,
+			expiresAt: Date.now() - 10000, // expired
+		};
+
+		const result = await ensureFreshFactoryToken(account, [account], {
+			containerPath: join(testDir, "nonexistent.json"),
+			authFilePath: testAuthFile,
+			keyFilePath: testKeyFile,
+		});
+
+		expect(result).toBe(false);
+		// Account data should NOT have been modified
+		expect(account.accessToken).toBe(originalJwt);
+		expect(account.refreshToken).toBe(originalRefresh);
+	});
+
+	test("refresh failure with API key returns true (fallback)", async () => {
+		globalThis.fetch = async () => {
+			return new Response(JSON.stringify({ detail: "Invalid token" }), { status: 401 });
+		};
+
+		const account = {
+			label: "work",
+			accountId: "user_A",
+			accessToken: "expired-jwt",
+			refreshToken: "bad-refresh",
+			expiresAt: Date.now() - 10000,
+			apiKey: "fk-test-api-key",
+		};
+
+		const result = await ensureFreshFactoryToken(account, [account], {
+			containerPath: join(testDir, "nonexistent.json"),
+			authFilePath: testAuthFile,
+			keyFilePath: testKeyFile,
+		});
+
+		// Returns true because API key provides fallback
+		expect(result).toBe(true);
+	});
+
+	test("no refresh token with API key returns true (fallback)", async () => {
+		const account = {
+			label: "work",
+			accountId: "user_A",
+			accessToken: "expired-jwt",
+			refreshToken: null,
+			expiresAt: Date.now() - 10000,
+			apiKey: "fk-test-key",
+		};
+
+		const result = await ensureFreshFactoryToken(account, [account]);
+
+		expect(result).toBe(true);
+	});
+
+	test("no refresh token and no API key returns false", async () => {
+		const account = {
+			label: "work",
+			accountId: "user_A",
+			accessToken: "expired-jwt",
+			refreshToken: null,
+			expiresAt: Date.now() - 10000,
+		};
+
+		const result = await ensureFreshFactoryToken(account, [account]);
+
+		expect(result).toBe(false);
+	});
+
+	test("buffer window triggers proactive refresh", async () => {
+		const newJwt = createMockFactoryJWT("user_A", "proactive@test.com");
+		let refreshCalled = false;
+		globalThis.fetch = async (url) => {
+			if (url.includes("/auth/refresh")) {
+				refreshCalled = true;
+				return new Response(JSON.stringify({
+					access_token: newJwt,
+					refresh_token: "proactive-refresh",
+					expires_in: 3600,
+				}), { status: 200, headers: { "Content-Type": "application/json" } });
+			}
+			return new Response("Not found", { status: 404 });
+		};
+
+		// expiresAt is 30 seconds from now (within 60-second buffer)
+		const account = {
+			label: "work",
+			accountId: "user_A",
+			accessToken: "about-to-expire-jwt",
+			refreshToken: "some-refresh",
+			expiresAt: Date.now() + 30 * 1000,
+		};
+
+		const result = await ensureFreshFactoryToken(account, [account], {
+			containerPath: join(testDir, "nonexistent.json"),
+			authFilePath: testAuthFile,
+			keyFilePath: testKeyFile,
+		});
+
+		expect(result).toBe(true);
+		expect(refreshCalled).toBe(true);
+		expect(account.accessToken).toBe(newJwt);
+	});
+
+	test("updates accountId from new JWT sub claim", async () => {
+		const newJwt = createMockFactoryJWT("user_NEW_ID", "updated@test.com");
+		globalThis.fetch = async (url) => {
+			if (url.includes("/auth/refresh")) {
+				return new Response(JSON.stringify({
+					access_token: newJwt,
+					refresh_token: "new-refresh",
+					expires_in: 3600,
+				}), { status: 200, headers: { "Content-Type": "application/json" } });
+			}
+			return new Response("Not found", { status: 404 });
+		};
+
+		const account = {
+			label: "work",
+			accountId: "user_OLD_ID",
+			accessToken: "expired-jwt",
+			refreshToken: "some-refresh",
+			expiresAt: Date.now() - 10000,
+		};
+
+		await ensureFreshFactoryToken(account, [account], {
+			containerPath: join(testDir, "nonexistent.json"),
+			authFilePath: testAuthFile,
+			keyFilePath: testKeyFile,
+		});
+
+		expect(account.accountId).toBe("user_NEW_ID");
 	});
 });
