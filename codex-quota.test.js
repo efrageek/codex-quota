@@ -110,6 +110,11 @@ import {
 	getFactoryActiveLabel,
 	findFactoryAccountByLabel,
 	getAllFactoryLabels,
+	// Factory usage utilities
+	computeBillingPeriod,
+	sumDailyTokens,
+	extractModelBreakdown,
+	fetchFactoryUsage,
 	printHelp,
 	printHelpAdd,
 	printHelpCodexSync,
@@ -5433,5 +5438,543 @@ describe("--local flag", () => {
 		// In local mode, harness-sourced accounts should be absent
 		expect(claudeCodeFromHarness?.source?.includes(".credentials.json") ?? false).toBe(false);
 		expect(opencodeFromHarness?.source?.includes("opencode/auth.json") ?? false).toBe(false);
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Factory usage tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("computeBillingPeriod", () => {
+	test("defaults to day 1 when billingDay is undefined", () => {
+		const result = computeBillingPeriod(undefined, new Date(2026, 2, 12)); // March 12
+		expect(result.start).toBe("2026-03-01");
+		expect(result.end).toBe("2026-03-31");
+	});
+
+	test("defaults to day 1 when billingDay is null", () => {
+		const result = computeBillingPeriod(null, new Date(2026, 2, 12)); // March 12
+		expect(result.start).toBe("2026-03-01");
+		expect(result.end).toBe("2026-03-31");
+	});
+
+	test("computes billing period with day=15 (mid-month)", () => {
+		const result = computeBillingPeriod(15, new Date(2026, 2, 20)); // March 20
+		expect(result.start).toBe("2026-03-15");
+		expect(result.end).toBe("2026-04-14");
+	});
+
+	test("computes billing period with day=15 when before billing day", () => {
+		const result = computeBillingPeriod(15, new Date(2026, 2, 10)); // March 10
+		expect(result.start).toBe("2026-02-15");
+		expect(result.end).toBe("2026-03-14");
+	});
+
+	test("handles day 31 in February (clamps to last day)", () => {
+		// Feb 2026 has 28 days, billingDay=31 should clamp to 28
+		const result = computeBillingPeriod(31, new Date(2026, 2, 5)); // March 5 → period started Feb 28
+		expect(result.start).toBe("2026-02-28");
+		expect(result.end).toBe("2026-03-30");
+	});
+
+	test("handles day 31 in April (clamps to 30)", () => {
+		// April has 30 days, billingDay=31 should clamp to 30
+		const result = computeBillingPeriod(31, new Date(2026, 4, 1)); // May 1 → period started Apr 30
+		expect(result.start).toBe("2026-04-30");
+		expect(result.end).toBe("2026-05-30");
+	});
+
+	test("handles year boundary Dec→Jan", () => {
+		const result = computeBillingPeriod(1, new Date(2026, 0, 15)); // Jan 15
+		expect(result.start).toBe("2026-01-01");
+		expect(result.end).toBe("2026-01-31");
+	});
+
+	test("handles year boundary with day=15 crossing Dec→Jan", () => {
+		const result = computeBillingPeriod(15, new Date(2026, 0, 10)); // Jan 10
+		expect(result.start).toBe("2025-12-15");
+		expect(result.end).toBe("2026-01-14");
+	});
+
+	test("when today is billing day, it starts a new period", () => {
+		const result = computeBillingPeriod(12, new Date(2026, 2, 12)); // March 12, billingDay=12
+		expect(result.start).toBe("2026-03-12");
+		expect(result.end).toBe("2026-04-11");
+	});
+
+	test("rejects billingDay = 0", () => {
+		const result = computeBillingPeriod(0);
+		expect(result.error).toBeDefined();
+		expect(result.error).toContain("Invalid billing day");
+	});
+
+	test("rejects billingDay = -1", () => {
+		const result = computeBillingPeriod(-1);
+		expect(result.error).toBeDefined();
+		expect(result.error).toContain("Invalid billing day");
+	});
+
+	test("rejects billingDay = 32", () => {
+		const result = computeBillingPeriod(32);
+		expect(result.error).toBeDefined();
+		expect(result.error).toContain("Invalid billing day");
+	});
+
+	test("rejects non-numeric billingDay", () => {
+		const result = computeBillingPeriod("abc");
+		expect(result.error).toBeDefined();
+		expect(result.error).toContain("Invalid billing day");
+	});
+
+	test("rejects NaN billingDay", () => {
+		const result = computeBillingPeriod(NaN);
+		expect(result.error).toBeDefined();
+		expect(result.error).toContain("Invalid billing day");
+	});
+
+	test("rejects Infinity billingDay", () => {
+		const result = computeBillingPeriod(Infinity);
+		expect(result.error).toBeDefined();
+		expect(result.error).toContain("Invalid billing day");
+	});
+
+	test("day=1 with last day of month", () => {
+		const result = computeBillingPeriod(1, new Date(2026, 2, 31)); // March 31
+		expect(result.start).toBe("2026-03-01");
+		expect(result.end).toBe("2026-03-31");
+	});
+
+	test("leap year February with day=29", () => {
+		// 2028 is a leap year
+		const result = computeBillingPeriod(29, new Date(2028, 1, 29)); // Feb 29
+		expect(result.start).toBe("2028-02-29");
+		expect(result.end).toBe("2028-03-28");
+	});
+
+	test("non-leap year February with day=29 clamps to 28", () => {
+		// 2026 is not a leap year
+		const result = computeBillingPeriod(29, new Date(2026, 2, 5)); // March 5
+		expect(result.start).toBe("2026-02-28");
+		expect(result.end).toBe("2026-03-28");
+	});
+});
+
+describe("sumDailyTokens", () => {
+	test("sums billable_tokens across all days", () => {
+		const data = [
+			{ date: "2026-03-01", billable_tokens: 1000000 },
+			{ date: "2026-03-02", billable_tokens: 2000000 },
+			{ date: "2026-03-03", billable_tokens: 500000 },
+		];
+		expect(sumDailyTokens(data)).toBe(3500000);
+	});
+
+	test("returns 0 for empty array", () => {
+		expect(sumDailyTokens([])).toBe(0);
+	});
+
+	test("returns 0 for null input", () => {
+		expect(sumDailyTokens(null)).toBe(0);
+	});
+
+	test("returns 0 for undefined input", () => {
+		expect(sumDailyTokens(undefined)).toBe(0);
+	});
+
+	test("returns 0 for non-array input", () => {
+		expect(sumDailyTokens("not an array")).toBe(0);
+	});
+
+	test("skips entries with missing billable_tokens", () => {
+		const data = [
+			{ date: "2026-03-01", billable_tokens: 1000000 },
+			{ date: "2026-03-02" },
+			{ date: "2026-03-03", billable_tokens: 500000 },
+		];
+		expect(sumDailyTokens(data)).toBe(1500000);
+	});
+
+	test("handles single entry", () => {
+		const data = [{ date: "2026-03-01", billable_tokens: 42 }];
+		expect(sumDailyTokens(data)).toBe(42);
+	});
+
+	test("skips null entries in array", () => {
+		const data = [null, { date: "2026-03-01", billable_tokens: 100 }, undefined];
+		expect(sumDailyTokens(data)).toBe(100);
+	});
+});
+
+describe("extractModelBreakdown", () => {
+	test("aggregates by_model across multiple days", () => {
+		const data = [
+			{
+				date: "2026-03-01",
+				by_model: [
+					{ model_id: "claude-sonnet-4-20250514", billable_tokens: 800000 },
+					{ model_id: "claude-opus-4-20250514", billable_tokens: 200000 },
+				],
+			},
+			{
+				date: "2026-03-02",
+				by_model: [
+					{ model_id: "claude-sonnet-4-20250514", billable_tokens: 600000 },
+					{ model_id: "claude-haiku-3.5-20241022", billable_tokens: 100000 },
+				],
+			},
+		];
+		const result = extractModelBreakdown(data);
+		expect(result.length).toBe(3);
+		// Sorted by descending billable_tokens
+		expect(result[0].model_id).toBe("claude-sonnet-4-20250514");
+		expect(result[0].billable_tokens).toBe(1400000);
+		expect(result[1].model_id).toBe("claude-opus-4-20250514");
+		expect(result[1].billable_tokens).toBe(200000);
+		expect(result[2].model_id).toBe("claude-haiku-3.5-20241022");
+		expect(result[2].billable_tokens).toBe(100000);
+	});
+
+	test("returns empty array for null input", () => {
+		expect(extractModelBreakdown(null)).toEqual([]);
+	});
+
+	test("returns empty array for undefined input", () => {
+		expect(extractModelBreakdown(undefined)).toEqual([]);
+	});
+
+	test("returns empty array for empty data", () => {
+		expect(extractModelBreakdown([])).toEqual([]);
+	});
+
+	test("handles days with no by_model field", () => {
+		const data = [
+			{ date: "2026-03-01", billable_tokens: 1000 },
+			{ date: "2026-03-02", by_model: [{ model_id: "sonnet", billable_tokens: 500 }] },
+		];
+		const result = extractModelBreakdown(data);
+		expect(result.length).toBe(1);
+		expect(result[0].model_id).toBe("sonnet");
+		expect(result[0].billable_tokens).toBe(500);
+	});
+
+	test("handles model entries with missing model_id", () => {
+		const data = [
+			{
+				date: "2026-03-01",
+				by_model: [
+					{ model_id: "sonnet", billable_tokens: 500 },
+					{ billable_tokens: 300 }, // no model_id
+				],
+			},
+		];
+		const result = extractModelBreakdown(data);
+		expect(result.length).toBe(1);
+		expect(result[0].model_id).toBe("sonnet");
+	});
+
+	test("handles model entries with missing billable_tokens", () => {
+		const data = [
+			{
+				date: "2026-03-01",
+				by_model: [
+					{ model_id: "sonnet", billable_tokens: 500 },
+					{ model_id: "opus" }, // no billable_tokens
+				],
+			},
+		];
+		const result = extractModelBreakdown(data);
+		expect(result.length).toBe(2);
+		expect(result[0].model_id).toBe("sonnet");
+		expect(result[0].billable_tokens).toBe(500);
+		expect(result[1].model_id).toBe("opus");
+		expect(result[1].billable_tokens).toBe(0);
+	});
+});
+
+// Mock API response helpers for Factory usage tests
+function createMockFactoryApiResponse(dailyData) {
+	return {
+		data: dailyData,
+		meta: {
+			org_id: "org_01TEST",
+			start_date: dailyData[0]?.date ?? "2026-03-01",
+			end_date: dailyData[dailyData.length - 1]?.date ?? "2026-03-11",
+		},
+	};
+}
+
+describe("fetchFactoryUsage", () => {
+	let originalFetch;
+
+	beforeEach(() => {
+		originalFetch = globalThis.fetch;
+	});
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+	});
+
+	test("returns parsed usage data on successful API response", async () => {
+		const mockData = [
+			{
+				date: "2026-03-01",
+				billable_tokens: 1250000,
+				input_tokens: 980000,
+				output_tokens: 270000,
+				by_model: [
+					{ model_id: "claude-sonnet-4-20250514", billable_tokens: 800000 },
+					{ model_id: "claude-opus-4-20250514", billable_tokens: 450000 },
+				],
+			},
+			{
+				date: "2026-03-02",
+				billable_tokens: 750000,
+				input_tokens: 600000,
+				output_tokens: 150000,
+				by_model: [
+					{ model_id: "claude-sonnet-4-20250514", billable_tokens: 750000 },
+				],
+			},
+		];
+
+		globalThis.fetch = async (url, opts) => {
+			expect(url).toContain("startDate=");
+			expect(url).toContain("endDate=");
+			expect(opts.headers.Authorization).toBe("Bearer jwt-token-123");
+			return new Response(JSON.stringify(createMockFactoryApiResponse(mockData)), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		};
+
+		const account = { accessToken: "jwt-token-123", planLimit: 20000000 };
+		const result = await fetchFactoryUsage(account, {
+			billingDay: 1,
+			now: new Date(2026, 2, 12),
+		});
+
+		expect(result.success).toBe(true);
+		expect(result.usage.used).toBe(2000000);
+		expect(result.usage.limit).toBe(20000000);
+		expect(result.usage.percent).toBe(10);
+		expect(result.usage.billingPeriod.start).toBe("2026-03-01");
+		expect(result.usage.billingPeriod.end).toBe("2026-03-31");
+		expect(result.usage.byModel.length).toBe(2);
+		expect(result.usage.byModel[0].model_id).toBe("claude-sonnet-4-20250514");
+		expect(result.usage.byModel[0].billable_tokens).toBe(1550000);
+		expect(result.usage.data.length).toBe(2);
+	});
+
+	test("prefers JWT (accessToken) over API key", async () => {
+		let capturedAuth;
+		globalThis.fetch = async (url, opts) => {
+			capturedAuth = opts.headers.Authorization;
+			return new Response(JSON.stringify({ data: [] }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		};
+
+		const account = { accessToken: "jwt-token-preferred", apiKey: "fk-api-key-123" };
+		await fetchFactoryUsage(account, { now: new Date(2026, 2, 12) });
+		expect(capturedAuth).toBe("Bearer jwt-token-preferred");
+	});
+
+	test("falls back to apiKey when accessToken is missing", async () => {
+		let capturedAuth;
+		globalThis.fetch = async (url, opts) => {
+			capturedAuth = opts.headers.Authorization;
+			return new Response(JSON.stringify({ data: [] }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		};
+
+		const account = { apiKey: "fk-fallback-key" };
+		await fetchFactoryUsage(account, { now: new Date(2026, 2, 12) });
+		expect(capturedAuth).toBe("Bearer fk-fallback-key");
+	});
+
+	test("returns error when no auth token is available", async () => {
+		const result = await fetchFactoryUsage({}, { now: new Date(2026, 2, 12) });
+		expect(result.success).toBe(false);
+		expect(result.error).toContain("No authentication token");
+	});
+
+	test("returns error for HTTP 403", async () => {
+		globalThis.fetch = async () => {
+			return new Response(
+				JSON.stringify({ detail: "Analytics API is not enabled for your organization.", status: 403 }),
+				{ status: 403, headers: { "Content-Type": "application/json" } }
+			);
+		};
+
+		const account = { accessToken: "jwt-token" };
+		const result = await fetchFactoryUsage(account, { now: new Date(2026, 2, 12) });
+		expect(result.success).toBe(false);
+		expect(result.error).toContain("403");
+		expect(result.error).toContain("Analytics API is not enabled");
+	});
+
+	test("returns error for HTTP 500", async () => {
+		globalThis.fetch = async () => {
+			return new Response("Internal Server Error", {
+				status: 500,
+				headers: { "Content-Type": "text/plain" },
+			});
+		};
+
+		const account = { accessToken: "jwt-token" };
+		const result = await fetchFactoryUsage(account, { now: new Date(2026, 2, 12) });
+		expect(result.success).toBe(false);
+		expect(result.error).toContain("500");
+	});
+
+	test("returns error for timeout (AbortError)", async () => {
+		globalThis.fetch = async (url, opts) => {
+			// Simulate an abort error
+			const error = new Error("The operation was aborted");
+			error.name = "AbortError";
+			throw error;
+		};
+
+		const account = { accessToken: "jwt-token" };
+		const result = await fetchFactoryUsage(account, { now: new Date(2026, 2, 12) });
+		expect(result.success).toBe(false);
+		expect(result.error).toBe("Request timed out");
+	});
+
+	test("returns error for invalid JSON response", async () => {
+		globalThis.fetch = async () => {
+			return new Response("not valid json at all{{{", {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		};
+
+		const account = { accessToken: "jwt-token" };
+		const result = await fetchFactoryUsage(account, { now: new Date(2026, 2, 12) });
+		expect(result.success).toBe(false);
+		expect(result.error).toContain("Invalid JSON");
+	});
+
+	test("returns error for network error", async () => {
+		globalThis.fetch = async () => {
+			throw new Error("Network request failed");
+		};
+
+		const account = { accessToken: "jwt-token" };
+		const result = await fetchFactoryUsage(account, { now: new Date(2026, 2, 12) });
+		expect(result.success).toBe(false);
+		expect(result.error).toBe("Network request failed");
+	});
+
+	test("handles empty API response (no data)", async () => {
+		globalThis.fetch = async () => {
+			return new Response(JSON.stringify({ data: [], meta: {} }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		};
+
+		const account = { accessToken: "jwt-token", planLimit: 20000000 };
+		const result = await fetchFactoryUsage(account, { now: new Date(2026, 2, 12) });
+		expect(result.success).toBe(true);
+		expect(result.usage.used).toBe(0);
+		expect(result.usage.limit).toBe(20000000);
+		expect(result.usage.percent).toBe(0);
+		expect(result.usage.byModel).toEqual([]);
+		expect(result.usage.data).toEqual([]);
+	});
+
+	test("handles zero planLimit (avoids division by zero)", async () => {
+		globalThis.fetch = async () => {
+			return new Response(
+				JSON.stringify({ data: [{ date: "2026-03-01", billable_tokens: 5000 }] }),
+				{ status: 200, headers: { "Content-Type": "application/json" } }
+			);
+		};
+
+		const account = { accessToken: "jwt-token" }; // no planLimit → defaults to 0
+		const result = await fetchFactoryUsage(account, { now: new Date(2026, 2, 12) });
+		expect(result.success).toBe(true);
+		expect(result.usage.used).toBe(5000);
+		expect(result.usage.limit).toBe(0);
+		expect(result.usage.percent).toBe(0); // 0 rather than Infinity/NaN
+	});
+
+	test("returns error for invalid billingDay", async () => {
+		const account = { accessToken: "jwt-token" };
+		const result = await fetchFactoryUsage(account, { billingDay: 0 });
+		expect(result.success).toBe(false);
+		expect(result.error).toContain("Invalid billing day");
+	});
+
+	test("passes correct date params to API URL", async () => {
+		let capturedUrl;
+		globalThis.fetch = async (url) => {
+			capturedUrl = url;
+			return new Response(JSON.stringify({ data: [] }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		};
+
+		const account = { accessToken: "jwt-token", planLimit: 20000000 };
+		await fetchFactoryUsage(account, {
+			billingDay: 15,
+			now: new Date(2026, 2, 20), // March 20
+		});
+
+		expect(capturedUrl).toContain("startDate=2026-03-15");
+		expect(capturedUrl).toContain("endDate=2026-04-14");
+	});
+
+	test("uses access_token field (snake_case fallback)", async () => {
+		let capturedAuth;
+		globalThis.fetch = async (url, opts) => {
+			capturedAuth = opts.headers.Authorization;
+			return new Response(JSON.stringify({ data: [] }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		};
+
+		const account = { access_token: "snake-case-jwt" };
+		await fetchFactoryUsage(account, { now: new Date(2026, 2, 12) });
+		expect(capturedAuth).toBe("Bearer snake-case-jwt");
+	});
+
+	test("percent is capped at 100 when usage exceeds limit", async () => {
+		globalThis.fetch = async () => {
+			return new Response(
+				JSON.stringify({ data: [{ date: "2026-03-01", billable_tokens: 25000000 }] }),
+				{ status: 200, headers: { "Content-Type": "application/json" } }
+			);
+		};
+
+		const account = { accessToken: "jwt-token", planLimit: 20000000 };
+		const result = await fetchFactoryUsage(account, { now: new Date(2026, 2, 12) });
+		expect(result.success).toBe(true);
+		expect(result.usage.percent).toBe(100);
+	});
+
+	test("includes API response data array in result", async () => {
+		const mockData = [
+			{ date: "2026-03-01", billable_tokens: 100, by_model: [] },
+			{ date: "2026-03-02", billable_tokens: 200, by_model: [] },
+		];
+
+		globalThis.fetch = async () => {
+			return new Response(JSON.stringify({ data: mockData }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		};
+
+		const account = { accessToken: "jwt-token", planLimit: 1000 };
+		const result = await fetchFactoryUsage(account, { now: new Date(2026, 2, 12) });
+		expect(result.success).toBe(true);
+		expect(result.usage.data).toEqual(mockData);
 	});
 });

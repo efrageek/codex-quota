@@ -293,3 +293,11 @@ export {
 	findFactoryAccountByLabel,
 	getAllFactoryLabels,
 } from "./lib/factory-accounts.js";
+
+// Factory usage utilities (for testing)
+export {
+	computeBillingPeriod,
+	sumDailyTokens,
+	extractModelBreakdown,
+	fetchFactoryUsage,
+} from "./lib/factory-usage.js";
