@@ -271,3 +271,12 @@ export {
 	FACTORY_OAUTH_REFRESH_BUFFER_MS,
 	FACTORY_PLAN_TIERS,
 } from "./lib/constants.js";
+
+// Factory crypto utilities (for testing)
+export {
+	decryptAuthV2,
+	encryptAuthV2,
+	generateAuthKey,
+	readAuthV2Files,
+	writeAuthV2Files,
+} from "./lib/factory-crypto.js";

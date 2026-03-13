@@ -12,6 +12,7 @@ import {
 	existsSync,
 	readFileSync,
 	lstatSync,
+	statSync,
 	symlinkSync,
 	unlinkSync,
 } from "node:fs";
@@ -93,6 +94,12 @@ import {
 	FACTORY_AUTH_KEY_PATH,
 	FACTORY_OAUTH_REFRESH_BUFFER_MS,
 	FACTORY_PLAN_TIERS,
+	// Factory crypto utilities
+	decryptAuthV2,
+	encryptAuthV2,
+	generateAuthKey,
+	readAuthV2Files,
+	writeAuthV2Files,
 	printHelp,
 	printHelpAdd,
 	printHelpCodexSync,
@@ -236,6 +243,491 @@ describe("Factory constants", () => {
 		expect(FACTORY_MULTI_ACCOUNT_PATH.startsWith("/")).toBe(true);
 		expect(FACTORY_AUTH_FILE_PATH.startsWith("/")).toBe(true);
 		expect(FACTORY_AUTH_KEY_PATH.startsWith("/")).toBe(true);
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Factory crypto tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("generateAuthKey", () => {
+	test("returns a base64-encoded string", () => {
+		const key = generateAuthKey();
+		expect(typeof key).toBe("string");
+		// Base64 of 32 bytes = 44 chars (with padding)
+		expect(key.length).toBe(44);
+	});
+
+	test("decodes to exactly 32 bytes", () => {
+		const key = generateAuthKey();
+		const buf = Buffer.from(key, "base64");
+		expect(buf.length).toBe(32);
+	});
+
+	test("returns different values on each call", () => {
+		const key1 = generateAuthKey();
+		const key2 = generateAuthKey();
+		expect(key1).not.toBe(key2);
+	});
+
+	test("is valid base64", () => {
+		const key = generateAuthKey();
+		expect(key).toMatch(/^[A-Za-z0-9+/]+=*$/);
+	});
+});
+
+describe("decryptAuthV2", () => {
+	// Create a known test vector: encrypt with known key, then decrypt
+	const TEST_KEY = generateAuthKey();
+	const TEST_DATA = { access_token: "test-jwt-token", refresh_token: "test-refresh-abc" };
+
+	// Helper to encrypt with known values for test vectors
+	function createTestEncrypted(data, key) {
+		const result = encryptAuthV2(data, key);
+		return result.encrypted;
+	}
+
+	test("successfully decrypts valid IV:AuthTag:CipherText data", () => {
+		const encrypted = createTestEncrypted(TEST_DATA, TEST_KEY);
+		const decrypted = decryptAuthV2(encrypted, TEST_KEY);
+		expect(decrypted).not.toBeNull();
+		expect(decrypted.access_token).toBe("test-jwt-token");
+		expect(decrypted.refresh_token).toBe("test-refresh-abc");
+	});
+
+	test("returns null for null encrypted content", () => {
+		expect(decryptAuthV2(null, TEST_KEY)).toBeNull();
+	});
+
+	test("returns null for null key content", () => {
+		const encrypted = createTestEncrypted(TEST_DATA, TEST_KEY);
+		expect(decryptAuthV2(encrypted, null)).toBeNull();
+	});
+
+	test("returns null for empty encrypted content", () => {
+		expect(decryptAuthV2("", TEST_KEY)).toBeNull();
+	});
+
+	test("returns null for empty key content", () => {
+		const encrypted = createTestEncrypted(TEST_DATA, TEST_KEY);
+		expect(decryptAuthV2(encrypted, "")).toBeNull();
+	});
+
+	test("returns null for wrong segment count (1 segment)", () => {
+		expect(decryptAuthV2("singlebase64string", TEST_KEY)).toBeNull();
+	});
+
+	test("returns null for wrong segment count (2 segments)", () => {
+		expect(decryptAuthV2("part1:part2", TEST_KEY)).toBeNull();
+	});
+
+	test("returns null for wrong segment count (4 segments)", () => {
+		expect(decryptAuthV2("part1:part2:part3:part4", TEST_KEY)).toBeNull();
+	});
+
+	test("returns null for wrong key length (16 bytes instead of 32)", () => {
+		const shortKey = Buffer.from("1234567890123456").toString("base64");
+		const encrypted = createTestEncrypted(TEST_DATA, TEST_KEY);
+		expect(decryptAuthV2(encrypted, shortKey)).toBeNull();
+	});
+
+	test("returns null for wrong key length (64 bytes instead of 32)", () => {
+		const longKey = Buffer.alloc(64, 0xab).toString("base64");
+		const encrypted = createTestEncrypted(TEST_DATA, TEST_KEY);
+		expect(decryptAuthV2(encrypted, longKey)).toBeNull();
+	});
+
+	test("trims trailing whitespace from key content", () => {
+		const encrypted = createTestEncrypted(TEST_DATA, TEST_KEY);
+		const keyWithWhitespace = TEST_KEY + "  \n\t  \n";
+		const decrypted = decryptAuthV2(encrypted, keyWithWhitespace);
+		expect(decrypted).not.toBeNull();
+		expect(decrypted.access_token).toBe("test-jwt-token");
+	});
+
+	test("trims trailing newline from key content", () => {
+		const encrypted = createTestEncrypted(TEST_DATA, TEST_KEY);
+		const keyWithNewline = TEST_KEY + "\n";
+		const decrypted = decryptAuthV2(encrypted, keyWithNewline);
+		expect(decrypted).not.toBeNull();
+		expect(decrypted.access_token).toBe("test-jwt-token");
+	});
+
+	test("returns null for corrupt ciphertext (wrong key)", () => {
+		const encrypted = createTestEncrypted(TEST_DATA, TEST_KEY);
+		const differentKey = generateAuthKey();
+		// Different key should fail authentication tag check
+		expect(decryptAuthV2(encrypted, differentKey)).toBeNull();
+	});
+
+	test("returns null for corrupt ciphertext (tampered data)", () => {
+		const encrypted = createTestEncrypted(TEST_DATA, TEST_KEY);
+		const parts = encrypted.split(":");
+		// Tamper with the ciphertext by replacing part of it
+		const tampered = Buffer.from(parts[2], "base64");
+		if (tampered.length > 0) {
+			tampered[0] = tampered[0] ^ 0xff; // flip bits
+		}
+		parts[2] = tampered.toString("base64");
+		expect(decryptAuthV2(parts.join(":"), TEST_KEY)).toBeNull();
+	});
+
+	test("returns null for invalid base64 in IV segment", () => {
+		expect(decryptAuthV2("!!!invalid:AAAA:BBBB", TEST_KEY)).toBeNull();
+	});
+
+	test("returns null for invalid IV length (not 12 bytes)", () => {
+		const encrypted = createTestEncrypted(TEST_DATA, TEST_KEY);
+		const parts = encrypted.split(":");
+		// Replace IV with a 16-byte value instead of 12
+		parts[0] = Buffer.alloc(16, 0).toString("base64");
+		expect(decryptAuthV2(parts.join(":"), TEST_KEY)).toBeNull();
+	});
+
+	test("returns null for invalid AuthTag length (not 16 bytes)", () => {
+		const encrypted = createTestEncrypted(TEST_DATA, TEST_KEY);
+		const parts = encrypted.split(":");
+		// Replace AuthTag with an 8-byte value instead of 16
+		parts[1] = Buffer.alloc(8, 0).toString("base64");
+		expect(decryptAuthV2(parts.join(":"), TEST_KEY)).toBeNull();
+	});
+
+	test("handles trimming encrypted content whitespace", () => {
+		const encrypted = createTestEncrypted(TEST_DATA, TEST_KEY);
+		const decrypted = decryptAuthV2("  " + encrypted + "  \n", TEST_KEY);
+		expect(decrypted).not.toBeNull();
+		expect(decrypted.access_token).toBe("test-jwt-token");
+	});
+});
+
+describe("encryptAuthV2", () => {
+	const TEST_KEY = generateAuthKey();
+
+	test("returns object with encrypted field for valid input", () => {
+		const result = encryptAuthV2({ access_token: "test" }, TEST_KEY);
+		expect(result.encrypted).toBeDefined();
+		expect(result.error).toBeUndefined();
+	});
+
+	test("produces IV:AuthTag:CipherText format (3 colon-separated parts)", () => {
+		const result = encryptAuthV2({ access_token: "test" }, TEST_KEY);
+		const parts = result.encrypted.split(":");
+		expect(parts.length).toBe(3);
+	});
+
+	test("IV segment is 12 bytes when decoded from base64", () => {
+		const result = encryptAuthV2({ access_token: "test" }, TEST_KEY);
+		const iv = Buffer.from(result.encrypted.split(":")[0], "base64");
+		expect(iv.length).toBe(12);
+	});
+
+	test("AuthTag segment is 16 bytes when decoded from base64", () => {
+		const result = encryptAuthV2({ access_token: "test" }, TEST_KEY);
+		const authTag = Buffer.from(result.encrypted.split(":")[1], "base64");
+		expect(authTag.length).toBe(16);
+	});
+
+	test("returns error for null data", () => {
+		const result = encryptAuthV2(null, TEST_KEY);
+		expect(result.error).toBeDefined();
+		expect(result.encrypted).toBeUndefined();
+	});
+
+	test("returns error for null key", () => {
+		const result = encryptAuthV2({ access_token: "test" }, null);
+		expect(result.error).toBeDefined();
+	});
+
+	test("returns error for wrong key length", () => {
+		const shortKey = Buffer.from("1234567890123456").toString("base64");
+		const result = encryptAuthV2({ access_token: "test" }, shortKey);
+		expect(result.error).toBeDefined();
+		expect(result.error).toContain("key length");
+	});
+
+	test("trims trailing whitespace from key before use", () => {
+		const result = encryptAuthV2({ access_token: "test" }, TEST_KEY + "\n\n  ");
+		expect(result.encrypted).toBeDefined();
+		expect(result.error).toBeUndefined();
+	});
+
+	test("produces different ciphertext on each call (random IV)", () => {
+		const data = { access_token: "same-data" };
+		const r1 = encryptAuthV2(data, TEST_KEY);
+		const r2 = encryptAuthV2(data, TEST_KEY);
+		expect(r1.encrypted).not.toBe(r2.encrypted);
+	});
+});
+
+describe("encrypt/decrypt roundtrip", () => {
+	test("roundtrip preserves all fields in data", () => {
+		const key = generateAuthKey();
+		const data = {
+			access_token: "eyJhbGciOiJSUzI1NiJ9.test-payload.signature",
+			refresh_token: "abcdefghijklmnopqrstuvwxy",
+		};
+		const encrypted = encryptAuthV2(data, key);
+		expect(encrypted.error).toBeUndefined();
+		const decrypted = decryptAuthV2(encrypted.encrypted, key);
+		expect(decrypted).toEqual(data);
+	});
+
+	test("roundtrip works with empty object", () => {
+		const key = generateAuthKey();
+		const data = {};
+		const encrypted = encryptAuthV2(data, key);
+		expect(encrypted.error).toBeUndefined();
+		const decrypted = decryptAuthV2(encrypted.encrypted, key);
+		expect(decrypted).toEqual(data);
+	});
+
+	test("roundtrip works with additional fields", () => {
+		const key = generateAuthKey();
+		const data = {
+			access_token: "jwt-token",
+			refresh_token: "refresh",
+			expires_at: 1234567890,
+			extra_field: "value",
+		};
+		const encrypted = encryptAuthV2(data, key);
+		const decrypted = decryptAuthV2(encrypted.encrypted, key);
+		expect(decrypted).toEqual(data);
+	});
+
+	test("roundtrip works with key that has trailing newline", () => {
+		const key = generateAuthKey();
+		const data = { access_token: "jwt", refresh_token: "ref" };
+		const encrypted = encryptAuthV2(data, key + "\n");
+		const decrypted = decryptAuthV2(encrypted.encrypted, key + "\n");
+		expect(decrypted).toEqual(data);
+	});
+
+	test("encrypt with clean key, decrypt with newline-padded key", () => {
+		const key = generateAuthKey();
+		const data = { access_token: "jwt", refresh_token: "ref" };
+		const encrypted = encryptAuthV2(data, key);
+		const decrypted = decryptAuthV2(encrypted.encrypted, key + "\n");
+		expect(decrypted).toEqual(data);
+	});
+
+	test("encrypt with newline-padded key, decrypt with clean key", () => {
+		const key = generateAuthKey();
+		const data = { access_token: "jwt", refresh_token: "ref" };
+		const encrypted = encryptAuthV2(data, key + "\n");
+		const decrypted = decryptAuthV2(encrypted.encrypted, key);
+		expect(decrypted).toEqual(data);
+	});
+});
+
+describe("readAuthV2Files", () => {
+	const testDir = join(tmpdir(), "codex-quota-crypto-read-" + Date.now());
+	const authFilePath = join(testDir, "auth.v2.file");
+	const keyFilePath = join(testDir, "auth.v2.key");
+
+	beforeEach(() => {
+		mkdirSync(testDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	test("returns null when auth file does not exist", () => {
+		writeFileSync(keyFilePath, generateAuthKey() + "\n");
+		const result = readAuthV2Files(authFilePath, keyFilePath);
+		expect(result).toBeNull();
+	});
+
+	test("returns null when key file does not exist", () => {
+		writeFileSync(authFilePath, "some:content:here");
+		const result = readAuthV2Files(authFilePath, keyFilePath);
+		expect(result).toBeNull();
+	});
+
+	test("returns null when both files do not exist", () => {
+		const result = readAuthV2Files(authFilePath, keyFilePath);
+		expect(result).toBeNull();
+	});
+
+	test("successfully reads and decrypts valid auth.v2 files", () => {
+		const key = generateAuthKey();
+		const data = { access_token: "test-jwt", refresh_token: "test-refresh" };
+		const encrypted = encryptAuthV2(data, key);
+		writeFileSync(authFilePath, encrypted.encrypted);
+		writeFileSync(keyFilePath, key + "\n");
+
+		const result = readAuthV2Files(authFilePath, keyFilePath);
+		expect(result).not.toBeNull();
+		expect(result.accessToken).toBe("test-jwt");
+		expect(result.refreshToken).toBe("test-refresh");
+	});
+
+	test("returns camelCase field names (accessToken, refreshToken)", () => {
+		const key = generateAuthKey();
+		const data = { access_token: "jwt", refresh_token: "ref" };
+		const encrypted = encryptAuthV2(data, key);
+		writeFileSync(authFilePath, encrypted.encrypted);
+		writeFileSync(keyFilePath, key);
+
+		const result = readAuthV2Files(authFilePath, keyFilePath);
+		expect(result).toHaveProperty("accessToken");
+		expect(result).toHaveProperty("refreshToken");
+		expect(result).not.toHaveProperty("access_token");
+		expect(result).not.toHaveProperty("refresh_token");
+	});
+
+	test("handles key file with trailing newline", () => {
+		const key = generateAuthKey();
+		const data = { access_token: "jwt", refresh_token: "ref" };
+		const encrypted = encryptAuthV2(data, key);
+		writeFileSync(authFilePath, encrypted.encrypted);
+		writeFileSync(keyFilePath, key + "\n\n");
+
+		const result = readAuthV2Files(authFilePath, keyFilePath);
+		expect(result).not.toBeNull();
+		expect(result.accessToken).toBe("jwt");
+	});
+
+	test("returns null for corrupt auth file", () => {
+		writeFileSync(authFilePath, "not:valid:base64content!!");
+		writeFileSync(keyFilePath, generateAuthKey() + "\n");
+
+		const result = readAuthV2Files(authFilePath, keyFilePath);
+		expect(result).toBeNull();
+	});
+
+	test("returns null for invalid key file (wrong length)", () => {
+		const key = generateAuthKey();
+		const data = { access_token: "jwt", refresh_token: "ref" };
+		const encrypted = encryptAuthV2(data, key);
+		writeFileSync(authFilePath, encrypted.encrypted);
+		// Write a 16-byte key instead of 32-byte
+		writeFileSync(keyFilePath, Buffer.from("1234567890123456").toString("base64"));
+
+		const result = readAuthV2Files(authFilePath, keyFilePath);
+		expect(result).toBeNull();
+	});
+
+	test("returns null values for missing token fields in decrypted JSON", () => {
+		const key = generateAuthKey();
+		const data = { some_other_field: "value" }; // no access_token or refresh_token
+		const encrypted = encryptAuthV2(data, key);
+		writeFileSync(authFilePath, encrypted.encrypted);
+		writeFileSync(keyFilePath, key);
+
+		const result = readAuthV2Files(authFilePath, keyFilePath);
+		expect(result).not.toBeNull();
+		expect(result.accessToken).toBeNull();
+		expect(result.refreshToken).toBeNull();
+	});
+});
+
+describe("writeAuthV2Files", () => {
+	const testDir = join(tmpdir(), "codex-quota-crypto-write-" + Date.now());
+	const authFilePath = join(testDir, "factory", "auth.v2.file");
+	const keyFilePath = join(testDir, "factory", "auth.v2.key");
+
+	beforeEach(() => {
+		mkdirSync(testDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	test("creates files and returns success", () => {
+		const data = { access_token: "jwt", refresh_token: "ref" };
+		const result = writeAuthV2Files(authFilePath, keyFilePath, data);
+		expect(result.success).toBe(true);
+		expect(result.error).toBeUndefined();
+	});
+
+	test("creates parent directory if it does not exist", () => {
+		const data = { access_token: "jwt", refresh_token: "ref" };
+		writeAuthV2Files(authFilePath, keyFilePath, data);
+		expect(existsSync(dirname(authFilePath))).toBe(true);
+	});
+
+	test("creates parent directory with 0o700 permissions", () => {
+		const deepDir = join(testDir, "deep", "nested");
+		const deepAuth = join(deepDir, "auth.v2.file");
+		const deepKey = join(deepDir, "auth.v2.key");
+		const data = { access_token: "jwt", refresh_token: "ref" };
+		writeAuthV2Files(deepAuth, deepKey, data);
+		const dirStats = statSync(deepDir);
+		// 0o700 = 448 decimal, check the mode bits
+		expect(dirStats.mode & 0o777).toBe(0o700);
+	});
+
+	test("writes auth file with 0o600 permissions", () => {
+		const data = { access_token: "jwt", refresh_token: "ref" };
+		writeAuthV2Files(authFilePath, keyFilePath, data);
+		const stats = statSync(authFilePath);
+		expect(stats.mode & 0o777).toBe(0o600);
+	});
+
+	test("writes key file with 0o600 permissions", () => {
+		const data = { access_token: "jwt", refresh_token: "ref" };
+		writeAuthV2Files(authFilePath, keyFilePath, data);
+		const stats = statSync(keyFilePath);
+		expect(stats.mode & 0o777).toBe(0o600);
+	});
+
+	test("written files can be read back with readAuthV2Files", () => {
+		const data = { access_token: "my-jwt-token", refresh_token: "my-refresh-token" };
+		writeAuthV2Files(authFilePath, keyFilePath, data);
+		const result = readAuthV2Files(authFilePath, keyFilePath);
+		expect(result).not.toBeNull();
+		expect(result.accessToken).toBe("my-jwt-token");
+		expect(result.refreshToken).toBe("my-refresh-token");
+	});
+
+	test("returns error for missing authFilePath", () => {
+		const result = writeAuthV2Files(null, keyFilePath, { access_token: "x" });
+		expect(result.success).toBe(false);
+		expect(result.error).toBeDefined();
+	});
+
+	test("returns error for missing keyFilePath", () => {
+		const result = writeAuthV2Files(authFilePath, null, { access_token: "x" });
+		expect(result.success).toBe(false);
+		expect(result.error).toBeDefined();
+	});
+
+	test("returns error for missing data", () => {
+		const result = writeAuthV2Files(authFilePath, keyFilePath, null);
+		expect(result.success).toBe(false);
+		expect(result.error).toBeDefined();
+	});
+
+	test("overwrites existing files on second write", () => {
+		const data1 = { access_token: "first-jwt", refresh_token: "first-ref" };
+		const data2 = { access_token: "second-jwt", refresh_token: "second-ref" };
+		writeAuthV2Files(authFilePath, keyFilePath, data1);
+		writeAuthV2Files(authFilePath, keyFilePath, data2);
+		const result = readAuthV2Files(authFilePath, keyFilePath);
+		expect(result).not.toBeNull();
+		expect(result.accessToken).toBe("second-jwt");
+		expect(result.refreshToken).toBe("second-ref");
+	});
+
+	test("key file content is base64 with trailing newline", () => {
+		const data = { access_token: "jwt", refresh_token: "ref" };
+		writeAuthV2Files(authFilePath, keyFilePath, data);
+		const keyContent = readFileSync(keyFilePath, "utf-8");
+		expect(keyContent.endsWith("\n")).toBe(true);
+		// Key before newline should be valid base64 of 32 bytes
+		const keyBase64 = keyContent.trim();
+		const buf = Buffer.from(keyBase64, "base64");
+		expect(buf.length).toBe(32);
+	});
+
+	test("auth file content is in IV:AuthTag:CipherText format", () => {
+		const data = { access_token: "jwt", refresh_token: "ref" };
+		writeAuthV2Files(authFilePath, keyFilePath, data);
+		const content = readFileSync(authFilePath, "utf-8");
+		const parts = content.split(":");
+		expect(parts.length).toBe(3);
 	});
 });
 
