@@ -10,6 +10,10 @@
 
 import { realpathSync } from "node:fs";
 
+// Load ~/.codex-quota.env before any module reads process.env
+import { loadEnvFile } from "./lib/env.js";
+loadEnvFile();
+
 // ─── Imports from lib modules ────────────────────────────────────────────────
 
 import { PRIMARY_CMD, MULTI_ACCOUNT_PATHS, CODEX_CLI_AUTH_PATH, CLAUDE_MULTI_ACCOUNT_PATHS } from "./lib/constants.js";
@@ -385,3 +389,6 @@ export { FACTORY_TOKEN_FIELDS } from "./lib/token-match.js";
 export { handleProxx, handleProxxQuota } from "./lib/handlers.js";
 export { fetchProxxOpenAiQuota } from "./lib/proxx-usage.js";
 export { printHelpProxx } from "./lib/display.js";
+
+// Env loader
+export { loadEnvFile, ENV_FILE_PATH } from "./lib/env.js";

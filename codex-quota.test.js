@@ -9587,6 +9587,10 @@ describe("Cross-area: Codex/Claude routing unchanged (VAL-CROSS-006, VAL-CROSS-0
 	});
 
 	test("handleQuota scope='codex' routes to Codex only, no Factory mention", async () => {
+		// Suppress proxx integration so local Codex accounts are used directly
+		const savedProxxToken = process.env.PROXX_AUTH_TOKEN;
+		delete process.env.PROXX_AUTH_TOKEN;
+
 		const codexToken = createMockAccessToken("acct_c1", "codex@test.com", "pro");
 		process.env.CODEX_ACCOUNTS = JSON.stringify([{
 			label: "my-codex",
@@ -9607,6 +9611,9 @@ describe("Cross-area: Codex/Claude routing unchanged (VAL-CROSS-006, VAL-CROSS-0
 			await handleQuota([], { json: true }, "codex");
 		} catch (e) {
 			if (!e.message.startsWith("EXIT_")) throw e;
+		} finally {
+			if (savedProxxToken === undefined) delete process.env.PROXX_AUTH_TOKEN;
+			else process.env.PROXX_AUTH_TOKEN = savedProxxToken;
 		}
 
 		const output = consoleOutput.join("\n");
