@@ -21,8 +21,9 @@ import {
 	printHelpList, printHelpRemove, printHelpQuota,
 	printHelpClaudeAdd, printHelpClaudeReauth, printHelpClaudeSwitch, printHelpClaudeSync,
 	printHelpClaudeList, printHelpClaudeRemove, printHelpClaudeQuota,
+	printHelpProxx,
 } from "./lib/display.js";
-import { handleCodex, handleClaude, handleFactory, handleFactoryQuota, handleQuota } from "./lib/handlers.js";
+import { handleCodex, handleClaude, handleFactory, handleFactoryQuota, handleQuota, handleProxx } from "./lib/handlers.js";
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,17 @@ async function main() {
 		}
 	}
 
+	// Parse --base-url flag for proxx
+	const baseUrlIdx = args.indexOf("--base-url");
+	if (baseUrlIdx !== -1 && baseUrlIdx + 1 < args.length) {
+		flags.proxxBaseUrl = args[baseUrlIdx + 1];
+	}
+	// Parse --token flag for proxx
+	const tokenIdx = args.indexOf("--token");
+	if (tokenIdx !== -1 && tokenIdx + 1 < args.length) {
+		flags.proxxToken = args[tokenIdx + 1];
+	}
+
 	// Set global noColorFlag for supportsColor() function
 	setNoColorFlag(flags.noColor);
 
@@ -69,9 +81,15 @@ async function main() {
 	if (billingDayIdx !== -1 && billingDayIdx + 1 < args.length) {
 		flagsWithValues.add(billingDayIdx + 1);
 	}
+	if (baseUrlIdx !== -1 && baseUrlIdx + 1 < args.length) {
+		flagsWithValues.add(baseUrlIdx + 1);
+	}
+	if (tokenIdx !== -1 && tokenIdx + 1 < args.length) {
+		flagsWithValues.add(tokenIdx + 1);
+	}
 	const nonFlagArgs = args.filter((a, i) => !a.startsWith("--") && a !== "-h" && !flagsWithValues.has(i));
 	const firstArg = nonFlagArgs[0];
-	const namespace = firstArg === "codex" || firstArg === "claude" || firstArg === "factory" ? firstArg : null;
+	const namespace = firstArg === "codex" || firstArg === "claude" || firstArg === "factory" || firstArg === "proxx" ? firstArg : null;
 	const namespaceArgs = namespace ? nonFlagArgs.slice(1) : nonFlagArgs;
 	const subcommand = namespace ? namespaceArgs[0] : null;
 
@@ -120,12 +138,17 @@ async function main() {
 			}
 			return;
 		}
-		// namespace === "factory"
+	if (namespace === "factory") {
 		switch (subcommand) {
 			case "quota": printHelpFactoryQuota(); break;
 			default: printHelpFactory(); break;
 		}
 		return;
+	}
+	if (namespace === "proxx") {
+		printHelpProxx();
+		return;
+	}
 	}
 
 	// Route to appropriate handler based on subcommand
@@ -139,6 +162,10 @@ async function main() {
 	}
 	if (namespace === "factory") {
 		await handleFactory(namespaceArgs, flags);
+		return;
+	}
+	if (namespace === "proxx") {
+		await handleProxx(namespaceArgs, flags);
 		return;
 	}
 
@@ -353,3 +380,8 @@ export {
 
 // Token match field maps (for testing)
 export { FACTORY_TOKEN_FIELDS } from "./lib/token-match.js";
+
+// Proxx exports
+export { handleProxx, handleProxxQuota } from "./lib/handlers.js";
+export { fetchProxxOpenAiQuota } from "./lib/proxx-usage.js";
+export { printHelpProxx } from "./lib/display.js";
