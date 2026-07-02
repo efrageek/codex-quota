@@ -35,14 +35,17 @@ async function main() {
 	const args = process.argv.slice(2);
 
 	// Parse flags
+	const nativeFlag = args.includes("--native");
 	const flags = {
 		json: args.includes("--json"),
+		compact: args.includes("--compact") || args.includes("-c"),
 		noBrowser: args.includes("--no-browser"),
 		noColor: args.includes("--no-color"),
 		oauth: args.includes("--oauth"),
 		manual: args.includes("--manual"),
 		dryRun: args.includes("--dry-run"),
-		local: args.includes("--local"),
+		native: nativeFlag,
+		local: args.includes("--local") || !nativeFlag,
 	};
 
 	// Parse --billing-day flag for Factory quota
@@ -91,7 +94,7 @@ async function main() {
 	if (tokenIdx !== -1 && tokenIdx + 1 < args.length) {
 		flagsWithValues.add(tokenIdx + 1);
 	}
-	const nonFlagArgs = args.filter((a, i) => !a.startsWith("--") && a !== "-h" && !flagsWithValues.has(i));
+	const nonFlagArgs = args.filter((a, i) => !a.startsWith("-") && !flagsWithValues.has(i));
 	const firstArg = nonFlagArgs[0];
 	const namespace = firstArg === "codex" || firstArg === "claude" || firstArg === "factory" || firstArg === "proxx" ? firstArg : null;
 	const namespaceArgs = namespace ? nonFlagArgs.slice(1) : nonFlagArgs;
@@ -303,6 +306,8 @@ export {
 	printHelpRemove,
 	printHelpQuota,
 	formatTokenCount,
+	buildAccountUsageLines,
+	buildClaudeUsageLines,
 	buildFactoryUsageLines,
 	printHelpFactory,
 	printHelpFactoryQuota,

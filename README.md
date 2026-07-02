@@ -2,6 +2,8 @@
 
 Multi-account manager for OpenAI Codex CLI, Claude Code, and Factory.ai. Add, switch, list, and remove accounts with OAuth browser authentication. Seamlessly switch between tools with shared credentials.
 
+By default, codex-quota now only reads and refreshes credentials from its own managed account files and env vars. Native app auth files from Codex CLI, OpenCode, Claude Code, and pi are no longer imported automatically, which avoids breaking those apps' tokens during refresh. Use `--native` to opt back into the old behavior when needed.
+
 Zero dependencies - uses Node.js built-ins only.
 
 ## Installation
@@ -134,7 +136,7 @@ credentials are required to update CLI auth files.
 
 ### codex list
 
-List all Codex accounts from all sources with status indicators.
+List all Codex accounts from codex-quota-managed sources with status indicators.
 
 ```bash
 codex-quota codex list
@@ -148,11 +150,12 @@ Output shows:
 - Source file for each account
 
 If CLI auth diverges from the tracked `activeLabel`, `list` and `quota` print a warning and
-suggest `codex-quota codex sync` to realign.
+suggest `codex-quota codex sync` to realign when `--native` is used.
 
 ### claude list
 
 List Claude credentials from `CLAUDE_ACCOUNTS` or `~/.claude-accounts.json`.
+By default this excludes native Claude Code / OpenCode auth files unless `--native` is used.
 
 ```bash
 codex-quota claude list
@@ -164,7 +167,7 @@ Output shows:
 - Source file for each credential
 
 For OAuth-based accounts, `list` and `quota` warn when stored tokens diverge from the
-`activeLabel` account. Session-key-only accounts are skipped.
+`activeLabel` account when `--native` is used. Session-key-only accounts are skipped.
 
 ### codex remove
 
@@ -200,6 +203,8 @@ This updates:
 1. `~/.codex/auth.json`
 2. `~/.local/share/opencode/auth.json` (if it exists)
 3. `~/.pi/agent/auth.json` (if it exists)
+
+Note: `sync` still writes native app auth files. What changed is the default read/import behavior for `list`/`quota` and other passive checks.
 
 ### claude sync
 
@@ -272,6 +277,8 @@ codex-quota factory remove old-account
 | Option | Description |
 |--------|-------------|
 | `--json` | Output in JSON format |
+| `--local` | Use only codex-quota-managed files; skip native app auth checks (default) |
+| `--native` | Include native app auth files in reads/checks for list/quota/divergence |
 | `--dry-run` | Preview sync without writing files |
 | `--billing-day` | Set billing period start day (1–31, default 1, Factory only) |
 | `--no-browser` | Print auth URL instead of opening browser |
@@ -289,9 +296,9 @@ reads from or writes to each path.
 | `CODEX_ACCOUNTS` env var | JSON array of accounts | Yes | No |
 | `~/.codex-accounts.json` | Primary multi-account file (shared with OpenCode) | Yes | Yes (`add`, `remove`) |
 | `~/.opencode/openai-codex-auth-accounts.json` | OpenCode accounts | Yes | No |
-| `~/.codex/auth.json` | Codex CLI single-account (label `codex-cli`) | Yes | Yes (`switch`) |
-| `~/.local/share/opencode/auth.json` | OpenCode auth file (`openai` provider) | No | Yes (`switch` if it exists) |
-| `~/.pi/agent/auth.json` | pi auth file (`openai-codex` provider) | No | Yes (`switch` if it exists) |
+| `~/.codex/auth.json` | Codex CLI single-account fallback (`--native` only, label `codex-cli`) | Yes | Yes (`switch`, `sync`) |
+| `~/.local/share/opencode/auth.json` | OpenCode auth file (`openai` provider) | No | Yes (`switch`, `sync` if it exists) |
+| `~/.pi/agent/auth.json` | pi auth file (`openai-codex` provider) | No | Yes (`switch`, `sync` if it exists) |
 
 New accounts added via `codex-quota codex add` are saved to `~/.codex-accounts.json`, which is
 shared with OpenCode.
@@ -302,7 +309,7 @@ Claude sources (in order):
 |--------|---------|------|-------|
 | `CLAUDE_ACCOUNTS` env var | JSON array of credentials | Yes | No |
 | `~/.claude-accounts.json` | Claude multi-account file | Yes | Yes (`add`, `remove`) |
-| `~/.claude/.credentials.json` | Claude Code credentials | Yes | Yes (`switch`, `sync`) |
+| `~/.claude/.credentials.json` | Claude Code credentials (`--native` only) | Yes | Yes (`switch`, `sync`) |
 | `~/.local/share/opencode/auth.json` | OpenCode auth file (`anthropic` provider) | No | Yes (`switch`, `sync` if it exists) |
 | `~/.pi/agent/auth.json` | pi auth file (`anthropic` provider) | No | Yes (`switch`, `sync` if it exists) |
 

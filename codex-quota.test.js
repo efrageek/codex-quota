@@ -118,6 +118,8 @@ import {
 	// Factory display utilities
 	formatTokenCount,
 	buildFactoryUsageLines,
+	buildAccountUsageLines,
+	buildClaudeUsageLines,
 	printHelp,
 	printHelpFactory,
 	printHelpFactoryQuota,
@@ -5382,7 +5384,7 @@ describe("--local flag", () => {
 		restoreFileContents(MULTI_ACCOUNT_PATHS[1], originalOpencodeAccounts);
 	});
 
-	test("loadAllAccountsNoDedup skips codex-cli auth.json when local=true", () => {
+	test("loadAllAccountsNoDedup only includes codex-cli auth.json when native mode is used", () => {
 		// Set up codex-cli auth.json with a single account
 		const mockToken = createMockAccessToken("acc_cli_only", "cli@example.com");
 		const codexAuthPayload = {
@@ -5398,18 +5400,23 @@ describe("--local flag", () => {
 		// No env or multi-account file accounts
 		delete process.env.CODEX_ACCOUNTS;
 
-		// Without local flag: should find codex-cli account as fallback
-		const withoutLocal = loadAllAccountsNoDedup();
-		const cliAccount = withoutLocal.find(a => a.label === "codex-cli");
+		// Safe/default behavior: codex-cli fallback should be excluded
+		const defaultAccounts = loadAllAccountsNoDedup({ local: true });
+		const defaultCliAccount = defaultAccounts.find(a => a.label === "codex-cli");
+		expect(defaultCliAccount).toBeUndefined();
+
+		// Native mode: should find codex-cli account as fallback
+		const withNative = loadAllAccountsNoDedup();
+		const cliAccount = withNative.find(a => a.label === "codex-cli");
 		expect(cliAccount).toBeDefined();
 
-		// With local flag: should not load codex-cli fallback
+		// Explicit local flag: should not load codex-cli fallback
 		const withLocal = loadAllAccountsNoDedup({ local: true });
 		const cliAccountLocal = withLocal.find(a => a.label === "codex-cli");
 		expect(cliAccountLocal).toBeUndefined();
 	});
 
-	test("loadAllAccounts respects local option", () => {
+	test("loadAllAccounts only includes codex-cli auth.json when native mode is used", () => {
 		const mockToken = createMockAccessToken("acc_local_test", "local@example.com");
 		const codexAuthPayload = {
 			tokens: {
@@ -5422,11 +5429,15 @@ describe("--local flag", () => {
 		writeFileSync(testCodexAuthFile, JSON.stringify(codexAuthPayload));
 		delete process.env.CODEX_ACCOUNTS;
 
-		// Without local: codex-cli should appear
-		const withoutLocal = loadAllAccounts(null);
-		expect(withoutLocal.some(a => a.label === "codex-cli")).toBe(true);
+		// Safe/default behavior: codex-cli should NOT appear
+		const defaultAccounts = loadAllAccounts(null, { local: true });
+		expect(defaultAccounts.some(a => a.label === "codex-cli")).toBe(false);
 
-		// With local: codex-cli should NOT appear
+		// Native mode: codex-cli should appear
+		const withNative = loadAllAccounts(null);
+		expect(withNative.some(a => a.label === "codex-cli")).toBe(true);
+
+		// Explicit local mode: codex-cli should NOT appear
 		const withLocal = loadAllAccounts(null, { local: true });
 		expect(withLocal.some(a => a.label === "codex-cli")).toBe(false);
 	});
@@ -6264,6 +6275,24 @@ describe("buildFactoryUsageLines", () => {
 		expect(lines[0]).not.toContain("()");
 	});
 
+	test("compact mode renders single-line factory summary", () => {
+		const account = { label: "work", email: "dev@co.com", org: "team" };
+		const payload = {
+			success: true,
+			usage: {
+				used: 5000000,
+				limit: 20000000,
+				percent: 25,
+				billingPeriod: { start: "2026-03-01", end: "2026-03-31" },
+				byModel: [],
+			},
+		};
+		const lines = buildFactoryUsageLines(account, payload, { compact: true });
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain("Factory (work) <dev@co.com> (team)");
+		expect(lines[0]).toContain("mo 75% 5,000,000/20,000,000");
+	});
+
 	test("includes source in error display", () => {
 		const account = { label: "work", source: "/home/user/.factory/auth.v2.file" };
 		const payload = { success: false, error: "Request timed out" };
@@ -6691,7 +6720,7 @@ describe("handleQuota with factory scope", () => {
 			};
 		};
 
-		await handleQuota([], { local: true }, "all");
+		await handleQuota([], {}, "all");
 		const output = consoleOutput.join("\n");
 		// Should have Codex output
 		expect(output).toContain("Codex");
@@ -6730,7 +6759,7 @@ describe("handleQuota with factory scope", () => {
 			return { ok: true, json: async () => ({}) };
 		};
 
-		await handleQuota([], { json: true, local: true }, "all");
+		await handleQuota([], { json: true }, "all");
 		const output = consoleOutput.join("\n");
 		const parsed = JSON.parse(output);
 		expect(parsed).toHaveProperty("factory");
@@ -6792,6 +6821,7 @@ describe("printHelpFactoryQuota", () => {
 		expect(output).toContain("factory quota");
 		expect(output).toContain("--billing-day");
 		expect(output).toContain("--json");
+		expect(output).toContain("--compact, -c");
 	});
 });
 
@@ -6820,6 +6850,7 @@ describe("printHelp includes Factory", () => {
 		printHelp();
 		const output = consoleOutput.join("\n");
 		expect(output).toContain("factory quota");
+		expect(output).toContain("--compact, -c");
 	});
 });
 
@@ -9465,6 +9496,48 @@ describe("Cross-area: Remove account clears quota display (VAL-CROSS-004)", () =
 		// Accounts loaded from file should be empty
 		const accounts = loadFactoryAccountsFromFile(testContainerPath);
 		expect(accounts.length).toBe(0);
+	});
+});
+
+describe("compact display helpers", () => {
+	test("buildAccountUsageLines compact renders single-line codex summary", () => {
+		const account = {
+			label: "work",
+			access: createMockAccessToken("acct_1", "user@example.com", "team"),
+		};
+		const payload = {
+			rate_limit: {
+				primary_window: { remaining_percent: 84, reset_after_seconds: 3600 },
+				secondary_window: { remaining_percent: 58, reset_after_seconds: 172800 },
+			},
+		};
+		const lines = buildAccountUsageLines(account, payload, { compact: true, noColor: true });
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain("5h  84%");
+		expect(lines[0]).toContain("7d  58%");
+		expect(lines[0]).toContain("Codex (work) <user@example.com> (team)");
+		expect(lines[0].indexOf("5h  84%")).toBeLessThan(lines[0].indexOf("Codex (work) <user@example.com> (team)"));
+	});
+
+	test("buildClaudeUsageLines compact renders single-line claude summary", () => {
+		const payload = {
+			success: true,
+			label: "work",
+			subscriptionType: "claude_max",
+			account: { email: "claude@test.com" },
+			usage: {
+				five_hour: { remaining_percent: 84, resets_at: new Date(Date.now() + 3600_000).toISOString() },
+				seven_day: { remaining_percent: 58, resets_at: new Date(Date.now() + 172800_000).toISOString() },
+				seven_day_sonnet: { remaining_percent: 99, resets_at: new Date(Date.now() + 3600_000).toISOString() },
+			},
+		};
+		const lines = buildClaudeUsageLines(payload, { compact: true, noColor: true });
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain("5h  84%");
+		expect(lines[0]).toContain("7d  58%");
+		expect(lines[0]).toContain("sonnet  99%");
+		expect(lines[0]).toContain("Claude (work) <claude@test.com> (Claude Max)");
+		expect(lines[0].indexOf("5h  84%")).toBeLessThan(lines[0].indexOf("Claude (work) <claude@test.com> (Claude Max)"));
 	});
 });
 
