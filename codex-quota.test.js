@@ -34,6 +34,8 @@ import {
 	// Deduplication functions
 	deduplicateAccountsByEmail,
 	deduplicateClaudeOAuthAccounts,
+	deduplicateClaudeResultsByUsage,
+	buildClaudeUsageFingerprint,
 	// Claude OAuth functions
 	loadClaudeOAuthFromClaudeCode,
 	loadClaudeOAuthFromOpenCode,
@@ -2656,6 +2658,43 @@ describe("deduplicateClaudeOAuthAccounts", () => {
 		];
 		const result = deduplicateClaudeOAuthAccounts(accounts);
 		expect(result.length).toBe(2);
+	});
+});
+
+describe("deduplicateClaudeResultsByUsage", () => {
+	test("includes new OAuth limits array in usage fingerprints", () => {
+		const baseUsage = {
+			five_hour: { utilization: 3 },
+			seven_day: { utilization: 1 },
+			seven_day_sonnet: null,
+			limits: [
+				{ kind: "session", group: "session", percent: 3 },
+				{ kind: "weekly_all", group: "weekly", percent: 1 },
+				{
+					kind: "weekly_scoped",
+					group: "weekly",
+					percent: 0,
+					scope: { model: { display_name: "Fable" }, surface: null },
+				},
+			],
+		};
+		const result = deduplicateClaudeResultsByUsage([
+			{ success: true, label: "a", usage: baseUsage },
+			{ success: true, label: "b", usage: structuredClone(baseUsage) },
+			{
+				success: true,
+				label: "c",
+				usage: {
+					...baseUsage,
+					limits: baseUsage.limits.map(limit => (
+						limit.kind === "weekly_scoped" ? { ...limit, percent: 4 } : limit
+					)),
+				},
+			},
+		]);
+
+		expect(result.map(item => item.label)).toEqual(["a", "c"]);
+		expect(buildClaudeUsageFingerprint(baseUsage)).toContain("Fable");
 	});
 });
 
@@ -6290,7 +6329,7 @@ describe("buildFactoryUsageLines", () => {
 		const lines = buildFactoryUsageLines(account, payload, { compact: true });
 		expect(lines).toHaveLength(1);
 		expect(lines[0]).toContain("Factory (work) <dev@co.com> (team)");
-		expect(lines[0]).toContain("mo 75% 5,000,000/20,000,000");
+		expect(lines[0]).toContain("mo  75% 5,000,000/20,000,000");
 	});
 
 	test("includes source in error display", () => {
@@ -9538,6 +9577,35 @@ describe("compact display helpers", () => {
 		expect(lines[0]).toContain("sonnet  99%");
 		expect(lines[0]).toContain("Claude (work) <claude@test.com> (Claude Max)");
 		expect(lines[0].indexOf("5h  84%")).toBeLessThan(lines[0].indexOf("Claude (work) <claude@test.com> (Claude Max)"));
+	});
+
+	test("buildClaudeUsageLines renders Fable scoped limits from the OAuth limits array", () => {
+		const payload = {
+			success: true,
+			label: "work",
+			usage: {
+				five_hour: { utilization: 3, resets_at: new Date(Date.now() + 3600_000).toISOString() },
+				seven_day: { utilization: 1, resets_at: new Date(Date.now() + 172800_000).toISOString() },
+				seven_day_sonnet: null,
+				limits: [
+					{ kind: "session", group: "session", percent: 3 },
+					{ kind: "weekly_all", group: "weekly", percent: 1 },
+					{
+						kind: "weekly_scoped",
+						group: "weekly",
+						percent: 0,
+						scope: { model: { display_name: "Fable" }, surface: null },
+					},
+				],
+			},
+		};
+
+		const lines = buildClaudeUsageLines(payload, { noColor: true });
+		expect(lines.join("\n")).toContain("Fable weekly:");
+		expect(lines.join("\n")).toContain("100% left");
+
+		const compact = buildClaudeUsageLines(payload, { compact: true, noColor: true });
+		expect(compact[0]).toContain("fable  100%");
 	});
 });
 

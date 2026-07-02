@@ -235,6 +235,8 @@ export {
 	loadAllClaudeOAuthAccounts,
 	fetchClaudeOAuthUsage,
 	fetchClaudeOAuthUsageForAccount,
+	deduplicateClaudeResultsByUsage,
+	buildClaudeUsageFingerprint,
 } from "./lib/claude-usage.js";
 
 export {
@@ -292,6 +294,9 @@ export {
 	formatExpiryStatus,
 	normalizePercentUsed,
 	parseClaudeUtilizationWindow,
+	parseClaudeLimitWindow,
+	getClaudeLimitDescriptor,
+	getClaudeLimitWindows,
 	drawBox,
 	printHelp,
 	printHelpAdd,
