@@ -250,6 +250,9 @@ export {
 	persistOpenAiOAuthTokens,
 } from "./lib/codex-tokens.js";
 
+// Codex usage functions
+export { fetchUsage, fetchResetCredits, mergeResetCredits } from "./lib/codex-usage.js";
+
 // OAuth PKCE utilities
 export {
 	generatePKCE,
@@ -292,6 +295,8 @@ export {
 export {
 	shortenPath,
 	formatExpiryStatus,
+	formatBankedResetExpiration,
+	parseBankedResetCredits,
 	normalizePercentUsed,
 	parseClaudeUtilizationWindow,
 	parseClaudeLimitWindow,
@@ -340,7 +345,14 @@ export {
 export { supportsColor, colorize, setNoColorFlag } from "./lib/color.js";
 
 // Constants (for testing)
-export { MULTI_ACCOUNT_PATHS, CODEX_CLI_AUTH_PATH, PRIMARY_CMD, CLAUDE_MULTI_ACCOUNT_PATHS } from "./lib/constants.js";
+export {
+	MULTI_ACCOUNT_PATHS,
+	CODEX_CLI_AUTH_PATH,
+	PRIMARY_CMD,
+	CLAUDE_MULTI_ACCOUNT_PATHS,
+	USAGE_URL,
+	RESET_CREDITS_URL,
+} from "./lib/constants.js";
 
 // Factory constants (for testing)
 export {

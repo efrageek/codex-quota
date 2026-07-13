@@ -46,6 +46,9 @@ import {
 	persistClaudeOAuthTokens,
 	ensureFreshToken,
 	persistOpenAiOAuthTokens,
+	fetchUsage,
+	fetchResetCredits,
+	mergeResetCredits,
 	detectCodexDivergence,
 	detectClaudeDivergence,
 	// Reverse-sync helpers
@@ -71,6 +74,8 @@ import {
 	extractAccountId,
 	getActiveAccountId,
 	formatExpiryStatus,
+	formatBankedResetExpiration,
+	parseBankedResetCredits,
 	normalizePercentUsed,
 	parseClaudeUtilizationWindow,
 	shortenPath,
@@ -86,6 +91,8 @@ import {
 	MULTI_ACCOUNT_PATHS,
 	CODEX_CLI_AUTH_PATH,
 	PRIMARY_CMD,
+	USAGE_URL,
+	RESET_CREDITS_URL,
 	CLAUDE_MULTI_ACCOUNT_PATHS,
 	// Factory constants
 	FACTORY_API_BASE,
@@ -224,6 +231,96 @@ const MOCK_REFRESH_TOKEN = "refresh_token_123";
 describe("PRIMARY_CMD constant", () => {
 	test("equals 'codex-quota'", () => {
 		expect(PRIMARY_CMD).toBe("codex-quota");
+	});
+
+	test("Codex usage endpoints point to the wham backend", () => {
+		expect(USAGE_URL).toBe("https://chatgpt.com/backend-api/wham/usage");
+		expect(RESET_CREDITS_URL).toBe(
+			"https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+		);
+	});
+});
+
+describe("Codex banked reset usage", () => {
+	test("mergeResetCredits preserves the usage summary and adds credit details", () => {
+		const usage = {
+			rate_limit_reset_credits: { available_count: 2, resets_to_redeem: 1 },
+		};
+		const details = {
+			available_count: 2,
+			total_earned_count: 4,
+			credits: [{ id: "credit_1", expires_at: "2026-07-27T12:00:00Z" }],
+		};
+
+		expect(mergeResetCredits(usage, details)).toEqual({
+			rate_limit_reset_credits: {
+				available_count: 2,
+				resets_to_redeem: 1,
+				total_earned_count: 4,
+				credits: details.credits,
+			},
+		});
+	});
+
+	test("fetchResetCredits sends the required Codex Desktop headers", async () => {
+		const originalFetch = globalThis.fetch;
+		let request;
+		globalThis.fetch = async (url, options) => {
+			request = { url, options };
+			return {
+				ok: true,
+				json: async () => ({ available_count: 0, credits: [] }),
+			};
+		};
+
+		try {
+			await fetchResetCredits({ access: "token", accountId: "acct_1" });
+			expect(request.url).toBe(RESET_CREDITS_URL);
+			expect(request.options.headers.Authorization).toBe("Bearer token");
+			expect(request.options.headers["OpenAI-Beta"]).toBe("codex-1");
+			expect(request.options.headers.originator).toBe("Codex Desktop");
+			expect(request.options.headers["chatgpt-account-id"]).toBe("acct_1");
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	test("fetchUsage enriches quota usage and tolerates reset-credit failures", async () => {
+		const originalFetch = globalThis.fetch;
+		let resetCreditsShouldFail = false;
+		globalThis.fetch = async url => {
+			if (url === RESET_CREDITS_URL) {
+				return resetCreditsShouldFail
+					? { ok: false, status: 403 }
+					: {
+						ok: true,
+						json: async () => ({
+							available_count: 1,
+							credits: [{ expires_at: "2026-07-27T12:00:00Z" }],
+						}),
+					};
+			}
+			expect(url).toBe(USAGE_URL);
+			return {
+				ok: true,
+				json: async () => ({
+					plan_type: "pro",
+					rate_limit_reset_credits: { available_count: 1 },
+				}),
+			};
+		};
+
+		try {
+			const enriched = await fetchUsage({ access: "token", accountId: "acct_1" });
+			expect(enriched.rate_limit_reset_credits.credits).toHaveLength(1);
+
+			resetCreditsShouldFail = true;
+			const fallback = await fetchUsage({ access: "token", accountId: "acct_1" });
+			expect(fallback.plan_type).toBe("pro");
+			expect(fallback.rate_limit_reset_credits).toEqual({ available_count: 1 });
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
 	});
 });
 
@@ -1360,7 +1457,7 @@ describe("help output", () => {
 describe("error messages", () => {
 	test("do not hardcode codex-usage", () => {
 		const source = readFileSync(join(import.meta.dir, "codex-quota.js"), "utf-8");
-		const matches = source.match(/codex-usage/g) ?? [];
+		const matches = source.match(/codex-usage(?!\.js)/g) ?? [];
 		expect(matches.length).toBe(0);
 	});
 });
@@ -9556,6 +9653,66 @@ describe("compact display helpers", () => {
 		expect(lines[0]).toContain("7d  58%");
 		expect(lines[0]).toContain("Codex (work) <user@example.com> (team)");
 		expect(lines[0].indexOf("5h  84%")).toBeLessThan(lines[0].indexOf("Codex (work) <user@example.com> (team)"));
+	});
+
+	test("buildAccountUsageLines labels a weekly-only Codex primary window as weekly", () => {
+		const account = {
+			label: "prolite",
+			access: createMockAccessToken("acct_1", "user@example.com", "pro"),
+		};
+		const payload = {
+			rate_limit: {
+				primary_window: {
+					remaining_percent: 69,
+					limit_window_seconds: 604800,
+					reset_after_seconds: 172800,
+				},
+				secondary_window: null,
+			},
+		};
+
+		const compactLines = buildAccountUsageLines(account, payload, { compact: true, noColor: true });
+		expect(compactLines[0]).toContain("7d  69%");
+		expect(compactLines[0]).not.toContain("5h");
+
+		const lines = buildAccountUsageLines(account, payload, { noColor: true });
+		expect(lines.join("\n")).toContain("Weekly limit:");
+		expect(lines.join("\n")).not.toContain("5h limit:");
+	});
+
+	test("buildAccountUsageLines shows banked reset expiration dates", () => {
+		const account = {
+			label: "work",
+			access: createMockAccessToken("acct_1", "user@example.com", "pro"),
+		};
+		const payload = {
+			rate_limit_reset_credits: {
+				available_count: 2,
+				credits: [
+					{ expires_at: "2026-07-27T12:34:56Z" },
+					{ expires_at: "2026-08-12T12:34:56Z" },
+				],
+			},
+		};
+
+		expect(parseBankedResetCredits(payload)).toEqual({
+			availableCount: 2,
+			credits: payload.rate_limit_reset_credits.credits,
+		});
+		expect(formatBankedResetExpiration(null)).toBe("not set");
+
+		const compactLines = buildAccountUsageLines(account, payload, {
+			compact: true,
+			noColor: true,
+		});
+		expect(compactLines[0]).toContain("banked 2");
+		expect(compactLines[0]).toContain("Jul 27, 2026");
+		expect(compactLines[0]).toContain("Aug 12, 2026");
+
+		const lines = buildAccountUsageLines(account, payload, { noColor: true });
+		expect(lines).toContain("Banked resets: 2");
+		expect(lines.find(line => line.includes("Jul 27, 2026"))).toStartWith("  Expires: ");
+		expect(lines.find(line => line.includes("Aug 12, 2026"))).toStartWith("           ");
 	});
 
 	test("buildClaudeUsageLines compact renders single-line claude summary", () => {
