@@ -41,6 +41,12 @@ import {
 	printHelp,
 	printHelpGrok,
 	printHelpGrokQuota,
+	visibleLength,
+	measureLinesWidth,
+	sharedBoxMinWidth,
+	drawBox,
+	formatQuotaBarLine,
+	QUOTA_LABEL_WIDTH,
 } from "./codex-quota.js";
 
 function makeGrokJwt(claims = {}) {
@@ -722,5 +728,52 @@ describe("Grok help output", () => {
 		printHelp();
 		const output = consoleOutput.join("\n");
 		expect(output).toContain("grok");
+	});
+});
+
+describe("uniform box width", () => {
+	test("visibleLength ignores ANSI color codes", () => {
+		expect(visibleLength("hello")).toBe(5);
+		expect(visibleLength("\u001b[32mhello\u001b[0m")).toBe(5);
+	});
+
+	test("sharedBoxMinWidth uses the widest content set", () => {
+		const short = ["hi"];
+		const long = ["this is a much longer line of content"];
+		expect(sharedBoxMinWidth([short, long], 10)).toBe(measureLinesWidth(long));
+		expect(sharedBoxMinWidth([short], 70)).toBe(70);
+	});
+
+	test("drawBox with shared minWidth produces equal outer widths", () => {
+		const a = ["Codex short"];
+		const b = ["Claude (work)", "Weekly limit: something longer here for width"];
+		const c = ["Grok mid"];
+		const width = sharedBoxMinWidth([a, b, c]);
+		const boxes = [a, b, c].map(lines => drawBox(lines, width));
+		const outer = boxes.map(box => visibleLength(box[0]));
+		expect(outer[0]).toBe(outer[1]);
+		expect(outer[1]).toBe(outer[2]);
+		for (const box of boxes) {
+			for (const row of box) {
+				expect(visibleLength(row)).toBe(outer[0]);
+			}
+		}
+	});
+});
+
+describe("quota bar alignment", () => {
+	test("bars share one start column across labels", () => {
+		const lines = [
+			formatQuotaBarLine("5h limit", 100),
+			formatQuotaBarLine("Weekly limit", 80, "(resets 10:59 on 19 Jul)"),
+			formatQuotaBarLine("Fable weekly", 63, "(resets 10:59 on 19 Jul)"),
+			formatQuotaBarLine("Credits", 67, "(resets 19:30)"),
+			formatQuotaBarLine("Api", 78),
+			formatQuotaBarLine("GrokBuild", 87),
+			formatQuotaBarLine("Sonnet weekly", 50),
+		];
+		const idxs = lines.map(l => l.indexOf("["));
+		expect(new Set(idxs).size).toBe(1);
+		expect(idxs[0]).toBe(QUOTA_LABEL_WIDTH);
 	});
 });

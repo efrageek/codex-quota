@@ -340,6 +340,11 @@ export {
 	formatGrokPeriodReset,
 	redactEmail,
 	formatEmailDisplay,
+	visibleLength,
+	measureLinesWidth,
+	sharedBoxMinWidth,
+	formatQuotaBarLine,
+	QUOTA_LABEL_WIDTH,
 } from "./lib/display.js";
 
 // Subcommand handlers (for testing)
