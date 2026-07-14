@@ -6214,7 +6214,7 @@ describe("buildFactoryUsageLines", () => {
 		const lines = buildFactoryUsageLines(account, payload, {});
 		expect(lines[0]).toContain("Factory");
 		expect(lines[0]).toContain("(work)");
-		expect(lines[0]).toContain("<dev@company.com>");
+		expect(lines[0]).toContain("<d***@company.com>");
 		expect(lines[0]).toContain("org_01XYZ");
 	});
 
@@ -6425,7 +6425,7 @@ describe("buildFactoryUsageLines", () => {
 		};
 		const lines = buildFactoryUsageLines(account, payload, { compact: true });
 		expect(lines).toHaveLength(1);
-		expect(lines[0]).toContain("Factory (work) <dev@co.com> (team)");
+		expect(lines[0]).toContain("Factory (work) <d***@co.com> (team)");
 		expect(lines[0]).toContain("mo  75% 5,000,000/20,000,000");
 	});
 
@@ -6460,7 +6460,7 @@ describe("buildFactoryUsageLines", () => {
 		};
 		const lines = buildFactoryUsageLines(account, payload, {});
 		expect(lines[0]).toMatch(/^Factory/);
-		expect(lines[0]).toContain("<dev@co.com>");
+		expect(lines[0]).toContain("<d***@co.com>");
 	});
 
 	test("100% usage shows full bar and 0% left", () => {
@@ -6659,7 +6659,7 @@ describe("handleFactoryQuota", () => {
 		const output = consoleOutput.join("\n");
 		expect(output).toContain("Factory");
 		expect(output).toContain("test-factory");
-		expect(output).toContain("dev@factory.ai");
+		expect(output).toContain("d***@factory.ai");
 		// Should contain usage bar characters
 		expect(output).toContain("[");
 		expect(output).toContain("]");
@@ -9651,8 +9651,8 @@ describe("compact display helpers", () => {
 		expect(lines).toHaveLength(1);
 		expect(lines[0]).toContain("5h  84%");
 		expect(lines[0]).toContain("7d  58%");
-		expect(lines[0]).toContain("Codex (work) <user@example.com> (team)");
-		expect(lines[0].indexOf("5h  84%")).toBeLessThan(lines[0].indexOf("Codex (work) <user@example.com> (team)"));
+		expect(lines[0]).toContain("Codex (work) <u***@example.com> (team)");
+		expect(lines[0].indexOf("5h  84%")).toBeLessThan(lines[0].indexOf("Codex (work) <u***@example.com> (team)"));
 	});
 
 	test("buildAccountUsageLines labels a weekly-only Codex primary window as weekly", () => {
@@ -9732,8 +9732,8 @@ describe("compact display helpers", () => {
 		expect(lines[0]).toContain("5h  84%");
 		expect(lines[0]).toContain("7d  58%");
 		expect(lines[0]).toContain("sonnet  99%");
-		expect(lines[0]).toContain("Claude (work) <claude@test.com> (Claude Max)");
-		expect(lines[0].indexOf("5h  84%")).toBeLessThan(lines[0].indexOf("Claude (work) <claude@test.com> (Claude Max)"));
+		expect(lines[0]).toContain("Claude (work) <c***@test.com> (Claude Max)");
+		expect(lines[0].indexOf("5h  84%")).toBeLessThan(lines[0].indexOf("Claude (work) <c***@test.com> (Claude Max)"));
 	});
 
 	test("buildClaudeUsageLines renders Fable scoped limits from the OAuth limits array", () => {

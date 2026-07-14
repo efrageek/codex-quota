@@ -21,13 +21,14 @@ import { GREEN, RED, YELLOW, setNoColorFlag, supportsColor, colorize, getPackage
 import { decodeJWT, extractAccountId, extractProfile } from "./lib/jwt.js";
 import {
 	printHelp, printHelpCodex, printHelpClaude, printHelpFactory, printHelpFactoryQuota,
+	printHelpGrok, printHelpGrokQuota,
 	printHelpAdd, printHelpCodexReauth, printHelpSwitch, printHelpCodexSync,
 	printHelpList, printHelpRemove, printHelpQuota,
 	printHelpClaudeAdd, printHelpClaudeReauth, printHelpClaudeSwitch, printHelpClaudeSync,
 	printHelpClaudeList, printHelpClaudeRemove, printHelpClaudeQuota,
 	printHelpProxx,
 } from "./lib/display.js";
-import { handleCodex, handleClaude, handleFactory, handleFactoryQuota, handleQuota, handleProxx } from "./lib/handlers.js";
+import { handleCodex, handleClaude, handleFactory, handleFactoryQuota, handleQuota, handleProxx, handleGrok } from "./lib/handlers.js";
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
@@ -44,6 +45,7 @@ async function main() {
 		oauth: args.includes("--oauth"),
 		manual: args.includes("--manual"),
 		dryRun: args.includes("--dry-run"),
+		showEmail: args.includes("--show-email"),
 		native: nativeFlag,
 		local: args.includes("--local") || !nativeFlag,
 	};
@@ -96,7 +98,7 @@ async function main() {
 	}
 	const nonFlagArgs = args.filter((a, i) => !a.startsWith("-") && !flagsWithValues.has(i));
 	const firstArg = nonFlagArgs[0];
-	const namespace = firstArg === "codex" || firstArg === "claude" || firstArg === "factory" || firstArg === "proxx" ? firstArg : null;
+	const namespace = firstArg === "codex" || firstArg === "claude" || firstArg === "factory" || firstArg === "grok" || firstArg === "proxx" ? firstArg : null;
 	const namespaceArgs = namespace ? nonFlagArgs.slice(1) : nonFlagArgs;
 	const subcommand = namespace ? namespaceArgs[0] : null;
 
@@ -152,6 +154,13 @@ async function main() {
 		}
 		return;
 	}
+	if (namespace === "grok") {
+		switch (subcommand) {
+			case "quota": printHelpGrokQuota(); break;
+			default: printHelpGrok(); break;
+		}
+		return;
+	}
 	if (namespace === "proxx") {
 		printHelpProxx();
 		return;
@@ -169,6 +178,10 @@ async function main() {
 	}
 	if (namespace === "factory") {
 		await handleFactory(namespaceArgs, flags);
+		return;
+	}
+	if (namespace === "grok") {
+		await handleGrok(namespaceArgs, flags);
 		return;
 	}
 	if (namespace === "proxx") {
@@ -321,6 +334,12 @@ export {
 	buildFactoryUsageLines,
 	printHelpFactory,
 	printHelpFactoryQuota,
+	printHelpGrok,
+	printHelpGrokQuota,
+	buildGrokUsageLines,
+	formatGrokPeriodReset,
+	redactEmail,
+	formatEmailDisplay,
 } from "./lib/display.js";
 
 // Subcommand handlers (for testing)
@@ -338,6 +357,8 @@ export {
 	handleFactoryRemove,
 	handleFactoryList,
 	handleFactoryQuota,
+	handleGrok,
+	handleGrokQuota,
 	handleQuota,
 } from "./lib/handlers.js";
 
@@ -405,12 +426,52 @@ export {
 } from "./lib/factory-tokens.js";
 
 // Token match field maps (for testing)
-export { FACTORY_TOKEN_FIELDS } from "./lib/token-match.js";
+export { FACTORY_TOKEN_FIELDS, XAI_TOKEN_FIELDS } from "./lib/token-match.js";
 
 // Proxx exports
 export { handleProxx, handleProxxQuota } from "./lib/handlers.js";
 export { fetchProxxOpenAiQuota } from "./lib/proxx-usage.js";
 export { printHelpProxx } from "./lib/display.js";
+
+// Grok / SuperGrok exports
+export {
+	XAI_OAUTH_CLIENT_ID,
+	XAI_OAUTH_TOKEN_URL,
+	XAI_OAUTH_USERINFO_URL,
+	XAI_OAUTH_REFRESH_BUFFER_MS,
+	GROK_BILLING_URL,
+	GROK_TIMEOUT_MS,
+	GROK_PI_AUTH_PATHS,
+	GROK_HERMES_AUTH_PATH,
+	GROK_OPENCODE_AUTH_PATH,
+} from "./lib/constants.js";
+export {
+	extractGrokProfile,
+	resolveGrokExpiresAt,
+	isValidGrokAccount,
+	candidateFromRawTokens,
+	loadGrokAccountsFromPiAuth,
+	loadGrokAccountsFromOpencodeAuth,
+	loadGrokAccountsFromHermesAuth,
+	loadGrokAccountsFromEnv,
+	mergeGrokAccountCandidates,
+	loadAllGrokAccounts,
+	findGrokAccountByLabel,
+	getAllGrokLabels,
+	getGrokSearchLocations,
+} from "./lib/grok-accounts.js";
+export {
+	isGrokTokenExpiring,
+	refreshGrokToken,
+	sourceMatchesRotatedTokens,
+	persistGrokTokens,
+	ensureFreshGrokToken,
+} from "./lib/grok-tokens.js";
+export {
+	normalizeGrokCreditsBilling,
+	fetchGrokUsage,
+	enrichGrokAccountFromUserinfo,
+} from "./lib/grok-usage.js";
 
 // Env loader
 export { loadEnvFile, ENV_FILE_PATH } from "./lib/env.js";

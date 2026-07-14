@@ -4,7 +4,7 @@ Guidelines for AI coding agents working in this repository.
 
 ## Project Overview
 
-`codex-quota` is a zero-dependency Node.js CLI for managing multiple OpenAI Codex, Claude, and Factory.ai OAuth accounts. Provides account management (add, switch, remove, list, sync) and quota checking using only Node.js built-in modules.
+`codex-quota` is a zero-dependency Node.js CLI for managing multiple OpenAI Codex, Claude, Factory.ai, and SuperGrok (xAI OAuth) accounts. Provides account management (add, switch, remove, list, sync) and quota checking using only Node.js built-in modules.
 
 ## Tech Stack
 
@@ -49,7 +49,8 @@ bun run release:pack
 ```
 codex-quota/
 ├── codex-quota.js            # Entry point: main(), CLI routing, barrel re-exports
-├── codex-quota.test.js       # Test suite (535 tests, imports via barrel re-exports)
+├── codex-quota.test.js       # Main test suite (imports via barrel re-exports)
+├── grok.test.js              # SuperGrok / Grok OAuth quota tests
 ├── lib/
 │   ├── constants.js          # All config constants and path definitions
 │   ├── color.js              # Terminal color output helpers
@@ -66,6 +67,9 @@ codex-quota/
 │   ├── factory-accounts.js   # Factory account loading, dedup, active-label
 │   ├── factory-tokens.js     # Factory token refresh and multi-store persistence
 │   ├── factory-usage.js      # Factory Analytics API fetch and billing period calculation
+│   ├── grok-accounts.js      # SuperGrok/xAI OAuth account loading from pi/OpenCode/Hermes
+│   ├── grok-tokens.js        # SuperGrok token refresh with fan-out multi-store writeback
+│   ├── grok-usage.js         # SuperGrok weekly credits billing fetch (cli-chat-proxy)
 │   ├── codex-usage.js        # Codex usage API fetch
 │   ├── claude-usage.js       # Claude usage API fetch (session + OAuth)
 │   ├── display.js            # Bars, boxes, usage lines, help text, shortenPath
@@ -104,6 +108,9 @@ codex-quota.js (entry)
   ├── lib/factory-accounts.js   ← constants, jwt, container, factory-crypto
   ├── lib/factory-tokens.js     ← constants, jwt, token-match, container, factory-crypto
   ├── lib/factory-usage.js      ← constants
+  ├── lib/grok-accounts.js      ← constants, jwt, paths, token-match
+  ├── lib/grok-tokens.js        ← constants, jwt, fs, grok-accounts
+  ├── lib/grok-usage.js         ← constants
   ├── lib/claude-usage.js       ← constants, paths, claude-accounts, claude-tokens
   ├── lib/display.js            ← constants, color, jwt, claude-usage (for normalizeClaudeOrgId)
   ├── lib/oauth.js              ← constants, jwt
@@ -134,7 +141,9 @@ codex-quota.js (entry)
 | New display/formatting | `lib/display.js` |
 | New CLI subcommand handler | `lib/handlers.js` (+ register in `handleCodex`/`handleClaude`/`handleFactory`) |
 | New OAuth flow logic | `lib/oauth.js` or `lib/claude-oauth.js` |
-| Token persistence changes | `lib/codex-tokens.js`, `lib/claude-tokens.js`, or `lib/factory-tokens.js` |
+| Token persistence changes | `lib/codex-tokens.js`, `lib/claude-tokens.js`, `lib/factory-tokens.js`, or `lib/grok-tokens.js` |
+| New Grok/SuperGrok loader | `lib/grok-accounts.js` |
+| Grok billing fetch | `lib/grok-usage.js` |
 | Sync/divergence logic | `lib/sync.js` |
 | **New export for tests** | Add to the relevant `lib/*.js` module AND add a barrel re-export in `codex-quota.js` |
 
@@ -143,7 +152,7 @@ codex-quota.js (entry)
 `lib/token-match.js` provides unified helpers that replace the old duplicated OpenAI/Claude token-match patterns:
 
 - `isOauthTokenMatch(params)` — single function replaces both `isOpenAiOauthTokenMatch` and `isClaudeOauthTokenMatch`
-- `normalizeEntryTokens(entry, fieldMap)` — generic field normalizer using `OPENAI_TOKEN_FIELDS`, `CLAUDE_TOKEN_FIELDS`, or `FACTORY_TOKEN_FIELDS`
+- `normalizeEntryTokens(entry, fieldMap)` — generic field normalizer using `OPENAI_TOKEN_FIELDS`, `CLAUDE_TOKEN_FIELDS`, `FACTORY_TOKEN_FIELDS`, or `XAI_TOKEN_FIELDS`
 - `updateEntryTokens(entry, account, fieldMap)` — generic field updater
 - `resolveKey(entry, candidates)` — picks the first existing key from candidates
 
@@ -297,4 +306,12 @@ afterEach(() => {
 
 ### Test Counts
 
-As of latest: **535 tests, 1326 expect() calls**. All tests must pass before any commit.
+As of latest: **581 tests** across `codex-quota.test.js` + `grok.test.js`. All tests must pass before any commit.
+
+### SuperGrok / Grok OAuth notes
+
+- Namespace: `cq grok` / `cq grok quota` (also included in default `cq` / `cq quota`).
+- Phase A is **quota-only**: no add/switch/remove; reads live tokens from pi/shuvpi/shuvhelm (`xai-oauth`), OpenCode (`xai`), Hermes pool/provider, and optional `GROK_ACCOUNTS` env.
+- Billing endpoint: `https://cli-chat-proxy.grok.com/v1/billing?format=credits` (weekly credits + Api/GrokBuild product split).
+- **Refresh fan-out hard rule**: xAI rotates refresh tokens. On refresh, write the new access+refresh to every store that held the *same previous refresh token*. Never refresh into an isolated store only — that bricks other agents.
+- Diverged refresh sessions (same user, different refresh) are left alone.
