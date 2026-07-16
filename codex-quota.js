@@ -316,6 +316,8 @@ export {
 	getClaudeLimitDescriptor,
 	getClaudeLimitWindows,
 	drawBox,
+	drawQuotaBox,
+	QUOTA_BOX_MAX_WIDTH,
 	printHelp,
 	printHelpAdd,
 	printHelpCodexReauth,

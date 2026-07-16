@@ -45,6 +45,8 @@ import {
 	measureLinesWidth,
 	sharedBoxMinWidth,
 	drawBox,
+	drawQuotaBox,
+	QUOTA_BOX_MAX_WIDTH,
 	formatQuotaBarLine,
 	QUOTA_LABEL_WIDTH,
 } from "./codex-quota.js";
@@ -641,6 +643,7 @@ describe("fetchGrokUsage", () => {
 
 describe("buildGrokUsageLines", () => {
 	test("renders compact Codex/Claude-style limit lines", () => {
+		const periodEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 		const lines = buildGrokUsageLines(
 			{ label: "personal", email: "a@b.com", tier: 5, source: "/tmp/auth.json" },
 			{
@@ -655,7 +658,7 @@ describe("buildGrokUsageLines", () => {
 					period: {
 						type: "USAGE_PERIOD_TYPE_WEEKLY",
 						start: "2026-07-08T02:30:16.863135+00:00",
-						end: "2026-07-15T02:30:16.863135+00:00",
+						end: periodEnd,
 					},
 				},
 			},
@@ -758,6 +761,49 @@ describe("uniform box width", () => {
 				expect(visibleLength(row)).toBe(outer[0]);
 			}
 		}
+	});
+
+	test("drawBox wraps content inside a narrow terminal width", () => {
+		const lines = [
+			"Codex (prolite) <s***@shuv.dev> (pro)",
+			"",
+			formatQuotaBarLine("Weekly limit", 100, "(resets 21:18 on 22 Jul)"),
+			"  Source: ~/.codex-accounts.json",
+		];
+		const box = drawBox(lines, sharedBoxMinWidth([lines]), 50);
+
+		expect(box.every(line => visibleLength(line) === 50)).toBe(true);
+		expect(box.join("\n")).toContain("│ Weekly limit: [████████████████████] 100% left │");
+		expect(box.join("\n")).toContain("│               (resets 21:18 on 22 Jul)");
+	});
+
+	test("drawBox keeps reset metadata together when a bar consumes the first row", () => {
+		const line = formatQuotaBarLine("Weekly limit", 100, "(resets 21:18 on 22 Jul)");
+		const box = drawBox([line], 70, 40);
+
+		expect(box.every(row => visibleLength(row) === 40)).toBe(true);
+		expect(box.join("\n")).toContain("│               100% left");
+		expect(box.join("\n")).toContain("│   (resets 21:18 on 22 Jul)");
+		expect(box.join("\n")).not.toContain("100% left (resets");
+	});
+
+	test("drawBox preserves ANSI styling when wrapped", () => {
+		const line = "\u001b[32mAdded an account with a deliberately long label\u001b[0m";
+		const box = drawBox([line], 10, 28);
+
+		expect(box.length).toBeGreaterThan(3);
+		expect(box.every(row => visibleLength(row) === 28)).toBe(true);
+		expect(box.slice(1, -1).every(row => row.includes("\u001b[32m"))).toBe(true);
+		expect(box.slice(1, -1).every(row => row.includes("\u001b[0m"))).toBe(true);
+	});
+
+	test("drawQuotaBox prefers a narrow card even when the terminal is wider", () => {
+		const line = formatQuotaBarLine("Weekly limit", 100, "(resets 21:18 on 22 Jul)");
+		const box = drawQuotaBox([line]);
+
+		expect(QUOTA_BOX_MAX_WIDTH).toBe(50);
+		expect(box.every(row => visibleLength(row) === QUOTA_BOX_MAX_WIDTH)).toBe(true);
+		expect(box.join("\n")).toContain("(resets 21:18 on 22 Jul)");
 	});
 });
 
