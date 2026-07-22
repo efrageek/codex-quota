@@ -1,6 +1,8 @@
 # codex-quota
 
-Multi-account manager for OpenAI Codex CLI, Claude Code, and Factory.ai. Add, switch, list, and remove accounts with OAuth browser authentication. Seamlessly switch between tools with shared credentials.
+Multi-provider quota monitor and account manager for OpenAI Codex CLI, Claude Code,
+Factory.ai, SuperGrok, and OpenCode Go. Add, switch, list, and remove supported accounts
+with OAuth browser authentication, and inspect all configured quotas together.
 
 By default, codex-quota now only reads and refreshes credentials from its own managed account files and env vars. Native app auth files from Codex CLI, OpenCode, Claude Code, and pi are no longer imported automatically, which avoids breaking those apps' tokens during refresh. Use `--native` to opt back into the old behavior when needed.
 
@@ -35,6 +37,9 @@ codex-quota factory add work
 # Check quota for all accounts
 codex-quota
 
+# Open the installable quota dashboard
+shuvquota
+
 # Switch active Codex account
 codex-quota codex switch personal
 
@@ -63,9 +68,48 @@ codex-quota claude remove old-account
 codex-quota factory remove old-account
 ```
 
+## shuvquota PWA
+
+`shuvquota` is the installable, responsive companion app for the same quota data shown by
+the CLI. It presents Codex, Claude, SuperGrok, and OpenCode Go usage in one
+fast-scanning view.
+
+```bash
+# Starts on http://127.0.0.1:4789
+shuvquota
+
+# Equivalent when working from this checkout
+bun run app
+```
+
+The web app is deliberately read-only. Its API returns a browser-safe snapshot and never
+exposes access tokens, refresh tokens, account IDs, credential paths, or raw provider
+responses. Quota values are never written to browser storage or the service-worker cache.
+The installed shell works offline; current quota values still require a live connection.
+
+Runtime settings are available as environment variables:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SHUVQUOTA_HOST` | `127.0.0.1` | HTTP bind address |
+| `SHUVQUOTA_PORT` | `4789` | HTTP port |
+| `SHUVQUOTA_ALLOWED_HOSTS` | local hostnames | Comma-separated proxy/public host allowlist |
+
+For a supervised local service from this source checkout, validate and apply its Oxmgr
+configuration:
+
+```bash
+oxmgr validate ./oxfile.toml
+oxmgr apply ./oxfile.toml
+oxmgr status shuvquota
+```
+
+Keep remote access behind a trusted private network or authenticated HTTPS proxy. The
+included server binds to loopback by default.
+
 ## Commands
 
-Run `codex-quota` with no namespace to check combined Codex + Claude + Factory usage.
+Run `codex-quota` with no namespace to check all configured quota providers.
 
 ### codex quota
 
@@ -86,6 +130,33 @@ codex-quota claude quota           # All Claude accounts
 codex-quota claude quota work      # Specific credential
 codex-quota claude quota --json    # JSON output
 ```
+
+### opencode-go quota
+
+Check the rolling 5-hour, weekly, and monthly limits shown by the authenticated
+OpenCode Go workspace dashboard:
+
+```bash
+codex-quota opencode-go quota
+codex-quota opencode-go quota --compact
+codex-quota opencode-go quota --json
+```
+
+OpenCode's production API does not currently expose Go usage to an API key, so
+this integration reads the same server-rendered page as the signed-in dashboard.
+Configure the workspace and browser session in `~/.codex-quota.env`:
+
+```dotenv
+OPENCODE_GO_WORKSPACE_ID=wrk_...
+OPENCODE_GO_AUTH_COOKIE=...
+OPENCODE_GO_LABEL=go
+```
+
+Protect the file with `chmod 600 ~/.codex-quota.env`. The label is optional and
+defaults to `go`. The HttpOnly cookie expires with the web session; if the command
+returns an authentication error, sign in at `opencode.ai` and replace the value.
+The cookie, workspace ID, response HTML, and credential source are never included
+in CLI JSON or browser API responses.
 
 ### codex add
 
@@ -437,7 +508,7 @@ All commands support `--json` for scripting:
 ```bash
 # Quota (combined)
 codex-quota --json
-# {"codex":[{"label":"personal","email":"user@example.com","usage":{...}}],"claude":[...]}
+# {"codex":[...],"claude":[...],"factory":[...],"grok":[...],"opencode-go":[...]}
 
 # List (Codex)
 codex-quota codex list --json
@@ -521,6 +592,11 @@ Codex overrides:
 Factory overrides:
 - `FACTORY_AUTH_FILE_PATH` to point to a different auth.v2.file
 - `FACTORY_AUTH_KEY_PATH` to point to a different auth.v2.key
+
+OpenCode Go dashboard overrides:
+- `OPENCODE_GO_WORKSPACE_ID` for the workspace segment in `/workspace/<id>/go`
+- `OPENCODE_GO_AUTH_COOKIE` for the signed-in `opencode.ai` `auth` cookie
+- `OPENCODE_GO_LABEL` for the optional display label (default: `go`)
 
 Notes:
 - On Linux, cookie access requires `sqlite3` and `secret-tool` (libsecret) to decrypt cookies.

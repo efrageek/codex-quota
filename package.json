@@ -13,16 +13,20 @@
   },
   "files": [
     "codex-quota.js",
+    "shuvquota.js",
     "lib/",
+    "web/",
     "README.md",
     "LICENSE"
   ],
   "bin": {
     "cq": "./codex-quota.js",
-    "codex-quota": "./codex-quota.js"
+    "codex-quota": "./codex-quota.js",
+    "shuvquota": "./shuvquota.js"
   },
   "scripts": {
     "start": "node codex-quota.js",
+    "app": "node shuvquota.js",
     "test": "bun test",
     "preflight": "node scripts/preflight.js",
     "release:patch": "bun pm version patch",

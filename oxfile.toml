@@ -1,0 +1,24 @@
+version = 1
+
+[[apps]]
+name = "shuvquota"
+command = "node shuvquota.js"
+cwd = "/home/shuv/repos/codex-quota"
+namespace = "codex-quota"
+restart_policy = "always"
+max_restarts = 20
+crash_restart_limit = 5
+restart_delay_secs = 2
+stop_signal = "SIGTERM"
+stop_timeout_secs = 10
+max_memory_mb = 192
+health_cmd = "curl -fsSo /dev/null http://127.0.0.1:4789/"
+health_interval_secs = 30
+health_timeout_secs = 5
+health_max_failures = 3
+
+[apps.env]
+NODE_ENV = "production"
+SHUVQUOTA_HOST = "127.0.0.1"
+SHUVQUOTA_PORT = "4789"
+SHUVQUOTA_ALLOWED_HOSTS = "shuvdev.tail586a6d.ts.net"

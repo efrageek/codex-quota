@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+	<meta name="theme-color" content="#0b0e11">
+	<meta name="color-scheme" content="dark">
+	<meta name="description" content="A local-first quota runway for Codex, Claude, SuperGrok, and OpenCode Go.">
+	<meta name="application-name" content="shuvquota">
+	<meta name="apple-mobile-web-app-capable" content="yes">
+	<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+	<meta name="apple-mobile-web-app-title" content="shuvquota">
+	<title>shuvquota</title>
+	<link rel="manifest" href="/manifest.webmanifest">
+	<link rel="icon" href="/icons/favicon.ico" sizes="any">
+	<link rel="icon" href="/icons/devil-phone.svg" type="image/svg+xml">
+	<link rel="apple-touch-icon" href="/icons/icon-180.png">
+	<link rel="stylesheet" href="/styles.css?v=8">
+	<script src="/app.js?v=9" defer></script>
+</head>
+<body>
+	<a class="skip-link" href="#main-content">Skip to quota runway</a>
+	<div class="app-shell">
+		<aside class="rail" aria-label="shuvquota navigation">
+			<a class="brand" href="#overview" aria-label="shuvquota overview">
+				<img class="brand-mark" src="/icons/devil-phone.svg" alt="">
+				<span class="brand-name">shuvquota</span>
+			</a>
+
+			<nav class="primary-nav" aria-label="Primary">
+				<button class="nav-item is-active" type="button" data-view="overview" aria-current="page">
+					<img src="/icons/ui/overview.svg" alt="">
+					<span>Overview</span>
+				</button>
+				<button class="nav-item" type="button" data-view="history">
+					<img src="/icons/ui/history.svg" alt="">
+					<span>History</span>
+				</button>
+				<button class="nav-item" type="button" data-view="settings">
+					<img src="/icons/ui/settings.svg" alt="">
+					<span>Settings</span>
+				</button>
+			</nav>
+
+			<div class="rail-spacer" aria-hidden="true"></div>
+
+			<div class="rail-status">
+				<div class="local-state">
+					<span class="status-dot" aria-hidden="true"></span>
+					<div>
+						<strong id="rail-connection">Local data</strong>
+						<span id="rail-storage">Never stored in browser</span>
+					</div>
+				</div>
+				<button class="rail-install" id="rail-install" type="button">
+					<img src="/icons/ui/download.svg" alt="">
+					<span>
+						<strong>Install shuvquota</strong>
+						<small>One-tap quota checks</small>
+					</span>
+				</button>
+			</div>
+		</aside>
+
+		<main class="main-content" id="main-content" tabindex="-1">
+			<section class="view is-active" id="overview-view" data-view-panel="overview" aria-labelledby="overview-title">
+				<header class="runway-header">
+					<div class="runway-heading">
+						<h1 id="overview-title">Quota Runway</h1>
+						<div class="scan-line" aria-live="polite">
+							<span class="scan-state" id="scan-state">Preparing local scan</span>
+							<span aria-hidden="true">·</span>
+							<span id="updated-at">Not updated yet</span>
+							<span class="live-badge" id="live-badge">LOCAL</span>
+						</div>
+						<p>All provider quota pressure at a glance. Know what is left and what resets next.</p>
+					</div>
+					<div class="runway-actions">
+						<button class="action-button primary-action" id="refresh-button" type="button">
+							<img src="/icons/ui/refresh.svg" alt="">
+							<span>
+								<strong>Refresh now</strong>
+								<small>Scan all providers</small>
+							</span>
+						</button>
+						<label class="scope-control" for="scope-select">
+							<img src="/icons/ui/user.svg" alt="">
+							<span class="scope-copy">
+								<strong>Scope</strong>
+								<select id="scope-select" aria-label="Provider and account scope">
+									<option value="all">All accounts</option>
+								</select>
+							</span>
+							<img class="scope-chevron" src="/icons/ui/chevron-down.svg" alt="">
+						</label>
+					</div>
+				</header>
+
+				<div class="notice" id="notice" role="status" hidden></div>
+
+				<div class="quota-table" aria-label="Provider quota runway">
+					<div class="quota-columns" aria-hidden="true">
+						<span>Provider</span>
+						<span>Remaining</span>
+						<span>Reset (local time)</span>
+						<span>Account</span>
+						<span>Risk</span>
+						<span>Limits</span>
+					</div>
+					<div class="provider-list" id="provider-list"></div>
+					<div class="empty-state" id="empty-state" hidden>
+						<strong>No quota rows match this scope.</strong>
+						<span>Choose a different provider or account.</span>
+					</div>
+				</div>
+
+				<footer class="runway-footer">
+					<span><img src="/icons/ui/refresh.svg" alt="">Foreground scan every 5 minutes</span>
+					<span id="next-scan">Next scan after this one</span>
+					<span id="timezone-copy">Times use your local timezone</span>
+				</footer>
+			</section>
+
+			<section class="view" id="history-view" data-view-panel="history" aria-labelledby="history-title" hidden>
+				<header class="section-header">
+					<p class="section-kicker">This session only</p>
+					<h1 id="history-title">Scan History</h1>
+					<p>Recent scans stay in memory while this tab is open. Nothing is written to browser storage.</p>
+				</header>
+				<div class="history-list" id="history-list"></div>
+				<div class="empty-state" id="history-empty">
+					<strong>No completed scans yet.</strong>
+					<span>Return to Overview and refresh quota data.</span>
+				</div>
+			</section>
+
+			<section class="view" id="settings-view" data-view-panel="settings" aria-labelledby="settings-title" hidden>
+				<header class="section-header">
+					<p class="section-kicker">Local-first by design</p>
+					<h1 id="settings-title">Settings</h1>
+					<p>shuvquota is a read-only view over the credentials already managed by codex-quota.</p>
+				</header>
+				<div class="settings-group">
+					<div class="settings-row">
+						<div>
+							<strong>Install this app</strong>
+							<span id="install-state">Checking install support…</span>
+						</div>
+						<button class="secondary-button" id="settings-install" type="button">Install</button>
+					</div>
+					<div class="settings-row">
+						<div>
+							<strong>Quota data</strong>
+							<span>Fetched live from the local service and never cached by the PWA.</span>
+						</div>
+						<span class="setting-value" id="settings-connection">Waiting</span>
+					</div>
+					<div class="settings-row">
+						<div>
+							<strong>Offline behavior</strong>
+							<span>The app shell and icons work offline. Live quota requires a connection.</span>
+						</div>
+						<span class="setting-value">Shell only</span>
+					</div>
+					<div class="settings-row">
+						<div>
+							<strong>Automatic scans</strong>
+							<span>Every five minutes while this tab is visible. Background polling is disabled.</span>
+						</div>
+						<span class="setting-value">Foreground</span>
+					</div>
+				</div>
+			</section>
+		</main>
+	</div>
+
+	<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+	<noscript>shuvquota needs JavaScript to request and format your local quota snapshot.</noscript>
+</body>
+</html>

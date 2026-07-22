@@ -22,13 +22,23 @@ import { decodeJWT, extractAccountId, extractProfile } from "./lib/jwt.js";
 import {
 	printHelp, printHelpCodex, printHelpClaude, printHelpFactory, printHelpFactoryQuota,
 	printHelpGrok, printHelpGrokQuota,
+	printHelpOpenCodeGo, printHelpOpenCodeGoQuota,
 	printHelpAdd, printHelpCodexReauth, printHelpSwitch, printHelpCodexSync,
 	printHelpList, printHelpRemove, printHelpQuota,
 	printHelpClaudeAdd, printHelpClaudeReauth, printHelpClaudeSwitch, printHelpClaudeSync,
 	printHelpClaudeList, printHelpClaudeRemove, printHelpClaudeQuota,
 	printHelpProxx,
 } from "./lib/display.js";
-import { handleCodex, handleClaude, handleFactory, handleFactoryQuota, handleQuota, handleProxx, handleGrok } from "./lib/handlers.js";
+import {
+	handleCodex,
+	handleClaude,
+	handleFactory,
+	handleFactoryQuota,
+	handleQuota,
+	handleProxx,
+	handleGrok,
+	handleOpenCodeGo,
+} from "./lib/handlers.js";
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
@@ -46,6 +56,7 @@ async function main() {
 		manual: args.includes("--manual"),
 		dryRun: args.includes("--dry-run"),
 		showEmail: args.includes("--show-email"),
+		noFactory: args.includes("--no-factory"),
 		native: nativeFlag,
 		local: args.includes("--local") || !nativeFlag,
 	};
@@ -98,7 +109,10 @@ async function main() {
 	}
 	const nonFlagArgs = args.filter((a, i) => !a.startsWith("-") && !flagsWithValues.has(i));
 	const firstArg = nonFlagArgs[0];
-	const namespace = firstArg === "codex" || firstArg === "claude" || firstArg === "factory" || firstArg === "grok" || firstArg === "proxx" ? firstArg : null;
+	const namespace = firstArg === "codex" || firstArg === "claude" || firstArg === "factory"
+		|| firstArg === "grok" || firstArg === "opencode-go" || firstArg === "proxx"
+		? firstArg
+		: null;
 	const namespaceArgs = namespace ? nonFlagArgs.slice(1) : nonFlagArgs;
 	const subcommand = namespace ? namespaceArgs[0] : null;
 
@@ -161,6 +175,13 @@ async function main() {
 		}
 		return;
 	}
+	if (namespace === "opencode-go") {
+		switch (subcommand) {
+			case "quota": printHelpOpenCodeGoQuota(); break;
+			default: printHelpOpenCodeGo(); break;
+		}
+		return;
+	}
 	if (namespace === "proxx") {
 		printHelpProxx();
 		return;
@@ -182,6 +203,10 @@ async function main() {
 	}
 	if (namespace === "grok") {
 		await handleGrok(namespaceArgs, flags);
+		return;
+	}
+	if (namespace === "opencode-go") {
+		await handleOpenCodeGo(namespaceArgs, flags);
 		return;
 	}
 	if (namespace === "proxx") {
@@ -340,6 +365,10 @@ export {
 	printHelpGrokQuota,
 	buildGrokUsageLines,
 	formatGrokPeriodReset,
+	printHelpOpenCodeGo,
+	printHelpOpenCodeGoQuota,
+	buildOpenCodeGoUsageLines,
+	formatOpenCodeGoReset,
 	redactEmail,
 	formatEmailDisplay,
 	visibleLength,
@@ -366,6 +395,9 @@ export {
 	handleFactoryQuota,
 	handleGrok,
 	handleGrokQuota,
+	handleOpenCodeGo,
+	handleOpenCodeGoQuota,
+	buildOpenCodeGoJsonOutput,
 	handleQuota,
 } from "./lib/handlers.js";
 
@@ -380,6 +412,8 @@ export {
 	CLAUDE_MULTI_ACCOUNT_PATHS,
 	USAGE_URL,
 	RESET_CREDITS_URL,
+	OPENCODE_GO_DASHBOARD_BASE_URL,
+	OPENCODE_GO_TIMEOUT_MS,
 } from "./lib/constants.js";
 
 // Factory constants (for testing)
@@ -479,6 +513,15 @@ export {
 	fetchGrokUsage,
 	enrichGrokAccountFromUserinfo,
 } from "./lib/grok-usage.js";
+
+// OpenCode Go dashboard exports
+export {
+	resolveOpenCodeGoDashboardConfig,
+	getOpenCodeGoSearchLocations,
+	parseOpenCodeGoResetSeconds,
+	parseOpenCodeGoDashboardHtml,
+	fetchOpenCodeGoUsage,
+} from "./lib/opencode-go-usage.js";
 
 // Env loader
 export { loadEnvFile, ENV_FILE_PATH } from "./lib/env.js";

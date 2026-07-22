@@ -1485,6 +1485,11 @@ describe("package.json metadata", () => {
 		expect(pkg.files).toContain("codex-quota.js");
 	});
 
+	test("files array includes the shuvquota PWA", () => {
+		expect(pkg.files).toContain("shuvquota.js");
+		expect(pkg.files).toContain("web/");
+	});
+
 	test("files array includes 'README.md'", () => {
 		expect(pkg.files).toContain("README.md");
 	});
@@ -1497,6 +1502,11 @@ describe("package.json metadata", () => {
 	test("bin includes 'cq' alias", () => {
 		expect(pkg.bin).toHaveProperty("cq");
 		expect(pkg.bin["cq"]).toBe("./codex-quota.js");
+	});
+
+	test("bin includes 'shuvquota' app command", () => {
+		expect(pkg.bin).toHaveProperty("shuvquota");
+		expect(pkg.bin.shuvquota).toBe("./shuvquota.js");
 	});
 
 	test("has repository field", () => {
@@ -1598,6 +1608,8 @@ describe("preflight checks", () => {
 		const result = checkRequiredFiles({ files: ["README.md"] });
 		expect(result.pass).toBe(false);
 		expect(result.message).toContain("codex-quota.js");
+		expect(result.message).toContain("shuvquota.js");
+		expect(result.message).toContain("web/");
 		expect(result.message).toContain("LICENSE");
 	});
 

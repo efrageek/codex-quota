@@ -21,7 +21,23 @@ const ROOT = join(__dirname, "..");
 // ─────────────────────────────────────────────────────────────────────────────
 
 const EXPECTED_NAME = "codex-quota";
-const REQUIRED_FILES = ["codex-quota.js", "lib/", "README.md", "LICENSE"];
+const REQUIRED_FILES = [
+	"codex-quota.js",
+	"shuvquota.js",
+	"lib/",
+	"web/",
+	"README.md",
+	"LICENSE",
+];
+const REQUIRED_DISK_PATHS = [
+	...REQUIRED_FILES,
+	"web/index.html",
+	"web/app.js",
+	"web/styles.css",
+	"web/manifest.webmanifest",
+	"web/sw.js",
+	"web/icons/devil-phone.svg",
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Check functions
@@ -105,7 +121,7 @@ function checkGitClean() {
  * @returns {{pass: boolean, message: string}}
  */
 function checkFilesExist() {
-	const missing = REQUIRED_FILES.filter(f => !existsSync(join(ROOT, f)));
+	const missing = REQUIRED_DISK_PATHS.filter(f => !existsSync(join(ROOT, f)));
 	if (missing.length === 0) {
 		return { pass: true, message: "all required files exist on disk" };
 	}
