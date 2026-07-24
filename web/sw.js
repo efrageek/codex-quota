@@ -1,10 +1,10 @@
-const CACHE_VERSION = "v9";
+const CACHE_VERSION = "v10";
 const SHELL_CACHE = `shuvquota-shell-${CACHE_VERSION}`;
 const STATIC_CACHE = `shuvquota-static-${CACHE_VERSION}`;
 
 const SHELL_URLS = [
 	"/index.html",
-	"/app.js?v=9",
+	"/app.js?v=10",
 	"/styles.css?v=8",
 	"/manifest.webmanifest",
 	"/fonts/barlow-condensed-500.woff2",
@@ -24,6 +24,7 @@ const SHELL_URLS = [
 	"/icons/providers/openai.svg",
 	"/icons/providers/anthropic.svg",
 	"/icons/providers/xai.svg",
+	"/icons/providers/opencode-go.svg",
 	"/icons/ui/overview.svg",
 	"/icons/ui/history.svg",
 	"/icons/ui/settings.svg",

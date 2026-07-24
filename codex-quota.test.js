@@ -9663,8 +9663,8 @@ describe("compact display helpers", () => {
 		expect(lines).toHaveLength(1);
 		expect(lines[0]).toContain("5h  84%");
 		expect(lines[0]).toContain("7d  58%");
-		expect(lines[0]).toContain("Codex (work) <u***@example.com> (team)");
-		expect(lines[0].indexOf("5h  84%")).toBeLessThan(lines[0].indexOf("Codex (work) <u***@example.com> (team)"));
+		expect(lines[0]).toContain("Codex (work) <u***@example.com> (Team)");
+		expect(lines[0].indexOf("5h  84%")).toBeLessThan(lines[0].indexOf("Codex (work) <u***@example.com> (Team)"));
 	});
 
 	test("buildAccountUsageLines labels a weekly-only Codex primary window as weekly", () => {
@@ -9744,8 +9744,8 @@ describe("compact display helpers", () => {
 		expect(lines[0]).toContain("5h  84%");
 		expect(lines[0]).toContain("7d  58%");
 		expect(lines[0]).toContain("sonnet  99%");
-		expect(lines[0]).toContain("Claude (work) <c***@test.com> (Claude Max)");
-		expect(lines[0].indexOf("5h  84%")).toBeLessThan(lines[0].indexOf("Claude (work) <c***@test.com> (Claude Max)"));
+		expect(lines[0]).toContain("Claude (work) <c***@test.com> (Max)");
+		expect(lines[0].indexOf("5h  84%")).toBeLessThan(lines[0].indexOf("Claude (work) <c***@test.com> (Max)"));
 	});
 
 	test("buildClaudeUsageLines renders Fable scoped limits from the OAuth limits array", () => {

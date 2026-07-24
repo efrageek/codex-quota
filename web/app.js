@@ -6,7 +6,7 @@ const PROVIDER_ICONS = Object.freeze({
 	codex: "/icons/providers/openai.svg",
 	claude: "/icons/providers/anthropic.svg",
 	grok: "/icons/providers/xai.svg",
-	"opencode-go": "/icons/devil-phone.svg",
+	"opencode-go": "/icons/providers/opencode-go.svg",
 });
 
 const state = {

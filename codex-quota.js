@@ -365,6 +365,7 @@ export {
 	printHelpGrokQuota,
 	buildGrokUsageLines,
 	formatGrokPeriodReset,
+	formatClaudeLabel,
 	printHelpOpenCodeGo,
 	printHelpOpenCodeGoQuota,
 	buildOpenCodeGoUsageLines,
@@ -485,12 +486,22 @@ export {
 	GROK_PI_AUTH_PATHS,
 	GROK_HERMES_AUTH_PATH,
 	GROK_OPENCODE_AUTH_PATH,
+	GROK_PLAN_OVERRIDE_PATH,
 } from "./lib/constants.js";
+export {
+	formatCodexPlanLabel,
+	formatClaudePlanLabel,
+	formatGrokPlanLabel,
+	humanizePlanSlug,
+	CLAUDE_PLAN_CHOICES,
+	GROK_PLAN_CHOICES,
+} from "./lib/plans.js";
 export {
 	extractGrokProfile,
 	resolveGrokExpiresAt,
 	isValidGrokAccount,
 	candidateFromRawTokens,
+	loadGrokPlanOverride,
 	loadGrokAccountsFromPiAuth,
 	loadGrokAccountsFromOpencodeAuth,
 	loadGrokAccountsFromHermesAuth,

@@ -173,7 +173,7 @@ describe("buildQuotaSnapshot", () => {
 		const codex = snapshot.providers[0].accounts[0];
 		expect(codex.label).toBe("workscript");
 		expect(codex.email).toBe("u***@example.com");
-		expect(codex.plan).toBe("pro");
+		expect(codex.plan).toBe("Pro");
 		expect(codex.status).toBe("attention");
 		expect(codex.windows).toHaveLength(3);
 		expect(codex.windows[0]).toEqual({
@@ -193,12 +193,13 @@ describe("buildQuotaSnapshot", () => {
 
 		const claude = snapshot.providers[1].accounts[0];
 		expect(claude.email).toBe("c***@example.net");
+		expect(claude.plan).toBe("Max");
 		expect(claude.windows.find(window => window.id === "session").usedPercent).toBe(50);
 		expect(claude.windows.find(window => window.id === "fable-weekly").remainingPercent).toBe(5);
 		expect(claude.status).toBe("attention");
 
 		const grok = snapshot.providers[2].accounts[0];
-		expect(grok.plan).toBe("Tier 3");
+		expect(grok.plan).toBe("SuperGrok");
 		expect(grok.windows.map(window => window.usedPercent)).toEqual([32, 12, 100]);
 		expect(grok.status).toBe("attention");
 
@@ -534,6 +535,7 @@ describe("static file resolution and MIME", () => {
 			"/manifest.webmanifest",
 			"/sw.js",
 			"/icons/devil-phone.svg",
+			"/icons/providers/opencode-go.svg",
 		]) {
 			expect(await resolveStaticFile(path)).not.toBeNull();
 		}

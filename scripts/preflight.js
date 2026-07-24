@@ -37,6 +37,7 @@ const REQUIRED_DISK_PATHS = [
 	"web/manifest.webmanifest",
 	"web/sw.js",
 	"web/icons/devil-phone.svg",
+	"web/icons/providers/opencode-go.svg",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

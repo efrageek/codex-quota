@@ -14,6 +14,14 @@ artwork and is not covered by the notices below.
 The provider marks remain trademarks of their respective owners. Inclusion here does not imply
 endorsement.
 
+## OpenCode
+
+- Asset: `providers/opencode-go.svg`
+- Source: OpenCode brand mark supplied for local shuvquota provider display
+- Changes: none beyond packaging as a static SVG under `providers/`
+
+The OpenCode mark remains a trademark of its owner. Inclusion here does not imply endorsement.
+
 ## Lobe Icons
 
 - Asset: `providers/xai.svg` (the XAI `Mono` icon)
